@@ -1,0 +1,7 @@
+## Weather simulator setup
+- Added `Assets/Scripts/Weather2D.cs` plus meta implementing the 2D temperature/humidity/wind simulation with texture output and interactive brushes.
+- Updated `Assets/Scenes/SampleScene.unity` to include a `Weather Controller` GameObject that hosts the `Weather2D` MonoBehaviour so the simulation runs when the scene loads.
+- Added dual input-path handling in `Weather2D` so pointer and brush input work under both the old `Input` manager and the new Input System package.
+- Expanded `Weather2D` with immediate-mode slider UI controlling global wind speed, wind direction, and simulation timescale, plus new wind/time-scale parameters applied to the simulation each frame.
+- Extended `Weather2D` with cloud-specific fields and microphysics: separate cloud advection/diffusion buffers, humidity→cloud condensation, cloud evaporation, and ground forcing (heat, moisture, updraft) to spur convection. Updated visualization to render a sky gradient, ground strip, and clouds with density-driven shading, plus camera background tweaks for the new look.
+- Added an in-game demo selector (IMGUI) wired to `ApplyDemoScenario`, currently offering a “Cloud Merger” preset that seeds two counter-rotating storm cells and converging winds so they collide mid-sky. Scenario resets clear the simulation arrays, re-seed base fields, inject Gaussian cloud/humidity blobs, and retune local wind to teach how pressure and vorticity drive cloud interactions.
