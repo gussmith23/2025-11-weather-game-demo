@@ -1,0 +1,367 @@
+#pragma kernel InjectSource
+#pragma kernel AdvectVelocity
+#pragma kernel AdvectScalar
+#pragma kernel ComputeDivergence
+#pragma kernel JacobiPressure
+#pragma kernel SubtractGradient
+#pragma kernel ClearTexture
+#pragma kernel Visualize
+#pragma kernel MoistureMicrophysics
+#pragma kernel ComputeStats
+
+// 8x8 threads cover 64 pixels per group
+#define THREADS_X 8
+#define THREADS_Y 8
+
+SamplerState linearClamp
+{
+    Filter = MIN_MAG_LINEAR_MIP_POINT;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+cbuffer SimParams
+{
+    int2 _SimSize;
+    float2 _InvSimSize;
+    float _DeltaTime;
+    float _VelocityDissipation;
+    float _DensityDissipation;
+    float2 _SourceCenter;
+    float _SourceRadius;
+    float _SourceDensity;
+    float2 _SourceVelocity;
+    float _SourceFeather;
+    float _UnusedPadding0;
+    float _UnusedPadding1;
+    float _DisplayGain;
+    float _DisplayGamma;
+    float _SaturationThreshold;
+    float _CondensationRate;
+    float _EvaporationRate;
+    float _PrecipitationRate;
+    float _LatentHeatBuoyancy;
+    float _CloudBlend;
+    float _CloudGain;
+    float _SourceMapBlend;
+    float3 _UnusedPad;
+};
+
+float2 clampUV(float2 uv)
+{
+    float2 halfPixel = _InvSimSize * 0.5;
+    return clamp(uv, halfPixel, 1.0 - halfPixel);
+}
+
+// ---------------------------------------------------------------------------
+// Source injection
+RWTexture2D<float2> _Velocity;
+RWTexture2D<float> _Humidity;
+RWStructuredBuffer<float> _DebugBuffer;
+Texture2D<float> _SurfaceMoistureTex;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void InjectSource(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float dist = distance(uv, _SourceCenter);
+    float falloff = saturate(1.0 - smoothstep(_SourceRadius - _SourceFeather, _SourceRadius, dist));
+    if (_SourceMapBlend > 0.5)
+    {
+        float mapSample = _SurfaceMoistureTex.SampleLevel(linearClamp, uv, 0);
+        falloff *= mapSample;
+    }
+
+    if (falloff <= 0.0)
+        return;
+
+    float2 vel = _Velocity[coord];
+    vel += _SourceVelocity * falloff;
+    _Velocity[coord] = vel;
+
+    float humidity = _Humidity[coord];
+    humidity += _SourceDensity * falloff;
+    _Humidity[coord] = humidity;
+}
+
+// ---------------------------------------------------------------------------
+// Velocity advection
+Texture2D<float2> _VectorFieldRead;
+RWTexture2D<float2> _VectorFieldWrite;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void AdvectVelocity(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float2 vel = _VectorFieldRead.SampleLevel(linearClamp, uv, 0);
+    float2 prevUV = clampUV(uv - _DeltaTime * vel);
+    float2 advected = _VectorFieldRead.SampleLevel(linearClamp, prevUV, 0);
+    _VectorFieldWrite[coord] = advected * _VelocityDissipation;
+}
+
+// ---------------------------------------------------------------------------
+// Scalar advection (humidity / clouds)
+Texture2D<float> _ScalarFieldRead;
+Texture2D<float2> _ScalarVelocity;
+RWTexture2D<float> _ScalarFieldWrite;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void AdvectScalar(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float2 vel = _ScalarVelocity.SampleLevel(linearClamp, uv, 0);
+    float2 prevUV = clampUV(uv - _DeltaTime * vel);
+    float sample = _ScalarFieldRead.SampleLevel(linearClamp, prevUV, 0);
+    _ScalarFieldWrite[coord] = sample * _DensityDissipation;
+}
+
+// ---------------------------------------------------------------------------
+// Divergence
+Texture2D<float2> _VelocityField;
+RWTexture2D<float> _DivergenceWrite;
+
+float2 SampleVelocity(int2 coord)
+{
+    coord = clamp(coord, int2(0, 0), _SimSize - 1);
+    return _VelocityField.Load(int3(coord, 0));
+}
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ComputeDivergence(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 left = SampleVelocity(coord + int2(-1, 0));
+    float2 right = SampleVelocity(coord + int2(1, 0));
+    float2 down = SampleVelocity(coord + int2(0, -1));
+    float2 up = SampleVelocity(coord + int2(0, 1));
+
+    float dx = (right.x - left.x) * 0.5;
+    float dy = (up.y - down.y) * 0.5;
+
+    _DivergenceWrite[coord] = dx + dy;
+}
+
+// ---------------------------------------------------------------------------
+// Jacobi pressure solve
+Texture2D<float> _PressureRead;
+Texture2D<float> _DivergenceTex;
+RWTexture2D<float> _PressureWrite;
+
+float SamplePressure(Texture2D<float> tex, int2 coord)
+{
+    coord = clamp(coord, int2(0, 0), _SimSize - 1);
+    return tex.Load(int3(coord, 0));
+}
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void JacobiPressure(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float left = SamplePressure(_PressureRead, coord + int2(-1, 0));
+    float right = SamplePressure(_PressureRead, coord + int2(1, 0));
+    float down = SamplePressure(_PressureRead, coord + int2(0, -1));
+    float up = SamplePressure(_PressureRead, coord + int2(0, 1));
+    float divergence = _DivergenceTex.Load(int3(coord, 0));
+
+    float pressure = (left + right + down + up - divergence) * 0.25;
+    _PressureWrite[coord] = pressure;
+}
+
+// ---------------------------------------------------------------------------
+// Subtract gradient to obtain divergence-free velocity
+Texture2D<float> _PressureTex;
+RWTexture2D<float2> _VelocityWriteGradient;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void SubtractGradient(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float left = SamplePressure(_PressureTex, coord + int2(-1, 0));
+    float right = SamplePressure(_PressureTex, coord + int2(1, 0));
+    float down = SamplePressure(_PressureTex, coord + int2(0, -1));
+    float up = SamplePressure(_PressureTex, coord + int2(0, 1));
+
+    float2 vel = _VelocityWriteGradient[coord];
+    vel.x -= (right - left) * 0.5;
+    vel.y -= (up - down) * 0.5;
+    _VelocityWriteGradient[coord] = vel;
+}
+
+// ---------------------------------------------------------------------------
+// Clear helper
+RWTexture2D<float> _ClearScalar;
+float _ClearValue;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ClearTexture(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    _ClearScalar[coord] = _ClearValue;
+}
+
+// ---------------------------------------------------------------------------
+// Visualization
+Texture2D<float> _DensityRead;
+Texture2D<float> _CloudRead;
+RWTexture2D<float4> _DisplayTexture;
+float4 _ColorLow;
+float4 _ColorHigh;
+float4 _CloudColor;
+float4 _SkyTopColor;
+float4 _SkyBottomColor;
+float4 _GroundColor;
+float4 _CloudShadowColor;
+float _CloudShadowStrength;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void Visualize(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float humidity = _DensityRead.SampleLevel(linearClamp, uv, 0);
+    float humidityIntensity = saturate(humidity * _DisplayGain);
+    humidityIntensity = pow(humidityIntensity, max(0.1, _DisplayGamma));
+    float4 sky = lerp(_SkyBottomColor, _SkyTopColor, saturate(uv.y));
+    float4 baseColor = lerp(_GroundColor, sky, saturate(uv.y * 1.2));
+    baseColor = lerp(baseColor, _ColorHigh, humidityIntensity);
+
+    float cloud = _CloudRead.SampleLevel(linearClamp, uv, 0);
+    float cloudIntensity = saturate(cloud * _CloudGain);
+    float cloudHighlight = pow(cloudIntensity, 0.6);
+    float cloudLerp = saturate(cloudIntensity * _CloudBlend);
+    float4 litCloud = lerp(_CloudShadowColor, _CloudColor, cloudHighlight);
+    litCloud = lerp(litCloud, _CloudColor, saturate(uv.y + 0.2));
+    float shadow = saturate(1.0 - (humidityIntensity * _CloudShadowStrength));
+    float4 color = lerp(baseColor, litCloud, cloudLerp);
+    color.rgb *= lerp(1.0, shadow, cloudLerp * 0.5);
+    _DisplayTexture[coord] = color;
+}
+
+// ---------------------------------------------------------------------------
+// Moisture microphysics
+RWTexture2D<float> _MicroHumidity;
+RWTexture2D<float> _MicroCloud;
+RWTexture2D<float2> _MicroVelocity;
+RWTexture2D<float> _PrecipitationTex;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void MoistureMicrophysics(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float humidity = max(0.0, _MicroHumidity[coord]);
+    float cloud = max(0.0, _MicroCloud[coord]);
+    float2 velocity = _MicroVelocity[coord];
+
+    float supersaturation = max(0.0, humidity - _SaturationThreshold);
+    float condense = min(humidity, supersaturation * _CondensationRate * _DeltaTime);
+    humidity -= condense;
+    cloud += condense;
+
+    float humidityDeficit = max(0.0, _SaturationThreshold - humidity);
+    float evaporate = min(cloud, humidityDeficit * _EvaporationRate * _DeltaTime);
+    cloud -= evaporate;
+    humidity += evaporate;
+
+    float precipitation = min(cloud, cloud * _PrecipitationRate * _DeltaTime);
+    cloud -= precipitation;
+    _PrecipitationTex[coord] = precipitation;
+
+    float buoyancy = condense * _LatentHeatBuoyancy;
+    velocity.y += buoyancy;
+
+    _MicroHumidity[coord] = max(0.0, humidity);
+    _MicroCloud[coord] = max(0.0, cloud);
+    _MicroVelocity[coord] = velocity;
+}
+
+// ---------------------------------------------------------------------------
+// Stats gathering (single-thread reduction)
+Texture2D<float> _StatsDensityTex;
+Texture2D<float2> _StatsVelocityTex;
+Texture2D<float> _StatsCloudTex;
+Texture2D<float> _StatsPrecipTex;
+
+[numthreads(1, 1, 1)]
+void ComputeStats(uint3 id : SV_DispatchThreadID)
+{
+    float densitySum = 0.0;
+    float densityMax = 0.0;
+    float speedSum = 0.0;
+    float speedMax = 0.0;
+    float cloudSum = 0.0;
+    float cloudMax = 0.0;
+    float precipSum = 0.0;
+    float precipMax = 0.0;
+
+    for (int y = 0; y < _SimSize.y; ++y)
+    {
+        for (int x = 0; x < _SimSize.x; ++x)
+        {
+            float cellHumidity = _StatsDensityTex.Load(int3(x, y, 0));
+            densitySum += cellHumidity;
+            densityMax = max(densityMax, cellHumidity);
+
+            float cloud = _StatsCloudTex.Load(int3(x, y, 0));
+            cloudSum += cloud;
+            cloudMax = max(cloudMax, cloud);
+
+            float precip = _StatsPrecipTex.Load(int3(x, y, 0));
+            precipSum += precip;
+            precipMax = max(precipMax, precip);
+
+            float2 vel = _StatsVelocityTex.Load(int3(x, y, 0));
+            float speed = length(vel);
+            speedSum += speed;
+            speedMax = max(speedMax, speed);
+        }
+    }
+
+    float cellCount = float(_SimSize.x * _SimSize.y);
+    float avgDensity = densitySum / max(cellCount, 1.0);
+    float avgSpeed = speedSum / max(cellCount, 1.0);
+    float avgCloud = cloudSum / max(cellCount, 1.0);
+    float avgPrecip = precipSum / max(cellCount, 1.0);
+
+    _DebugBuffer[0] = avgDensity;
+    _DebugBuffer[1] = densityMax;
+    _DebugBuffer[2] = avgSpeed;
+    _DebugBuffer[3] = speedMax;
+    _DebugBuffer[4] = avgCloud;
+    _DebugBuffer[5] = cloudMax;
+    _DebugBuffer[6] = densitySum + cloudSum;
+    _DebugBuffer[7] = cellCount;
+    _DebugBuffer[8] = avgPrecip;
+    _DebugBuffer[9] = precipMax;
+    _DebugBuffer[10] = precipSum;
+    _DebugBuffer[11] = 0.0;
+}
