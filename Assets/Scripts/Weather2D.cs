@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.Rendering;
@@ -92,6 +94,12 @@ public class Weather2D : MonoBehaviour
     public bool enableSurfaceForcing = false;
     public Texture2D surfaceMoistureMap;
 
+    [Header("Flow Limits")]
+    [Range(0.5f, 0.99f)]
+    public float upperDampingStart = 0.82f;
+    [Range(0f, 1f)]
+    public float upperDampingStrength = 0.45f;
+
     [Header("Sounding")]
     public bool applySoundingOnStart = false;
     public SoundingProfile initialSounding;
@@ -123,6 +131,7 @@ public class Weather2D : MonoBehaviour
     private int _kVisualize;
     private int _kStats;
     private int _kMicrophysics;
+    private int _kUpperDamping;
 
     private Vector2Int _dispatch;
     private Material _quadMaterial;
@@ -134,10 +143,41 @@ public class Weather2D : MonoBehaviour
     private bool _useBaseSource = true;
     private float _scenarioTimeScale = 1f;
     private bool _hasSurfaceMap = false;
+    private bool _initialized = false;
+    private float _rocketBoostTimer;
+    private float _rocketCondensationMultiplier = 1f;
+    private float _rocketPrecipitationMultiplier = 1f;
+    private float _defaultPrecipitationFeedback;
     private float _latestAvgPrecip;
     private float _latestAvgCloud;
     private float _latestAvgHumidity;
     private float _latestAvgSpeed;
+    private readonly List<ScheduledBurst> _scheduledRocketBursts = new List<ScheduledBurst>();
+    private readonly List<ActiveBurst> _activeRocketBursts = new List<ActiveBurst>();
+
+    public event Action<DemoScenario> DemoApplied;
+
+    private struct ScheduledBurst
+    {
+        public Burst burst;
+        public float delay;
+        public float duration;
+        public bool modulateSurface;
+    }
+
+    private struct ActiveBurst
+    {
+        public Burst burst;
+        public float remainingDuration;
+        public bool modulateSurface;
+    }
+
+    public DemoScenario CurrentScenario => _currentScenario;
+    public float LatestAvgPrecip => _latestAvgPrecip;
+    public float LatestAvgCloud => _latestAvgCloud;
+    public float LatestAvgHumidity => _latestAvgHumidity;
+    public float LatestAvgSpeed => _latestAvgSpeed;
+    public int PendingRocketBurstCount => _scheduledRocketBursts.Count + _activeRocketBursts.Count;
 
     [System.Serializable]
     public struct Burst
@@ -163,10 +203,31 @@ public class Weather2D : MonoBehaviour
         public float loopInterval;
         public bool disableBaseSource;
         public float timeScale;
+        public float rocketDelay;
+        public Burst[] rocketBursts;
+        public float rocketBurstDuration;
+        public float rocketBurstInterval;
+        public bool disableBaseSourceAfterRocket;
+        public float rocketBoostDuration;
+        public float rocketCondensationMultiplier;
+        public float rocketPrecipitationMultiplier;
+        public bool disablePrecipitationFeedback;
+        public float precipitationFeedbackOverride;
     }
 
     private void Awake()
     {
+        if (!Initialize())
+        {
+            enabled = false;
+        }
+    }
+
+    private bool Initialize()
+    {
+        if (_initialized)
+            return true;
+
         if (fluidCompute == null)
         {
             fluidCompute = Resources.Load<ComputeShader>("WeatherFluid");
@@ -174,9 +235,8 @@ public class Weather2D : MonoBehaviour
 
         if (fluidCompute == null)
         {
-            Debug.LogError("Weather2D needs the WeatherFluid.compute shader in a Resources folder.");
-            enabled = false;
-            return;
+            Debug.LogError("Weather2D needs the WeatherFluid.compute shader in a Resources folder.", this);
+            return false;
         }
 
         _kInject = fluidCompute.FindKernel("InjectSource");
@@ -189,14 +249,21 @@ public class Weather2D : MonoBehaviour
         _kVisualize = fluidCompute.FindKernel("Visualize");
         _kStats = fluidCompute.FindKernel("ComputeStats");
         _kMicrophysics = fluidCompute.FindKernel("MoistureMicrophysics");
+        _kUpperDamping = fluidCompute.FindKernel("ApplyUpperDamping");
 
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
+        _defaultPrecipitationFeedback = precipitationFeedback;
+        _initialized = true;
+        return true;
     }
 
     private void Start()
     {
+        if (!Initialize())
+            return;
+
         if (demoScenarios != null && demoScenarios.Length > 0)
         {
             ApplyDemo(_activeDemo);
@@ -225,6 +292,7 @@ public class Weather2D : MonoBehaviour
         Release(ref _display);
         Release(ref _precipitation);
         ReleaseDebugBuffer();
+        _initialized = false;
     }
 
 #if UNITY_EDITOR
@@ -324,7 +392,18 @@ public class Weather2D : MonoBehaviour
             var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
             quad.transform.SetParent(transform, false);
             quad.transform.localScale = Vector3.one * 5f;
-            Destroy(quad.GetComponent<Collider>());
+            var collider = quad.GetComponent<Collider>();
+            if (collider != null)
+            {
+                if (Application.isPlaying)
+                {
+                    Destroy(collider);
+                }
+                else
+                {
+                    DestroyImmediate(collider);
+                }
+            }
             _quadMaterial = new Material(Shader.Find("Unlit/Texture"));
             quad.GetComponent<MeshRenderer>().sharedMaterial = _quadMaterial;
         }
@@ -336,6 +415,9 @@ public class Weather2D : MonoBehaviour
 
     private void Update()
     {
+        if (!_initialized && !Initialize())
+            return;
+
         ConfigureSurfaceMap();
         float dt = Mathf.Min(Time.deltaTime, 0.033f) * Mathf.Max(0.1f, _scenarioTimeScale);
         int steps = Mathf.Max(1, substeps);
@@ -360,6 +442,8 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_DeltaTime", dt);
         fluidCompute.SetFloat("_VelocityDissipation", velocityDissipation);
         fluidCompute.SetFloat("_DensityDissipation", densityDissipation);
+
+        ProcessRocketBursts(dt);
 
         // Base thermal source near the ground.
         if (_useBaseSource)
@@ -392,9 +476,137 @@ public class Weather2D : MonoBehaviour
         AdvectHumidity();
         AdvectCloud();
         ProjectVelocity();
-        RunMicrophysics();
+        ApplyUpperDamping();
+        RunMicrophysics(dt);
         GatherStatsAndUpdatePrecipitation(dt);
         _stepsCompleted++;
+    }
+
+    public void TriggerRocketBoost(float duration, float condensationMultiplier, float precipitationMultiplier)
+    {
+        _rocketBoostTimer = Mathf.Max(_rocketBoostTimer, Mathf.Max(0f, duration));
+        _rocketCondensationMultiplier = Mathf.Max(1f, condensationMultiplier);
+        _rocketPrecipitationMultiplier = Mathf.Max(1f, precipitationMultiplier);
+    }
+
+    public void SetBaseSourceActive(bool active)
+    {
+        _useBaseSource = active;
+    }
+
+    public void ClearScriptedBursts()
+    {
+        _scheduledRocketBursts.Clear();
+        _activeRocketBursts.Clear();
+    }
+
+    public void TriggerRocketBurst(Burst burst, float duration)
+    {
+        TriggerRocketBurst(burst, 0f, duration);
+    }
+
+    public void TriggerRocketBurst(Burst burst, float delay, float duration)
+    {
+        ScheduleScriptedBurst(burst, delay, duration, false);
+    }
+
+    public void TriggerRocketSequence(Burst[] bursts, float initialDelay, float interval, float duration)
+    {
+        if (bursts == null || bursts.Length == 0)
+            return;
+
+        float delay = Mathf.Max(0f, initialDelay);
+        float spacing = Mathf.Max(0.0001f, interval);
+        float burstDuration = Mathf.Max(0.0001f, duration);
+        for (int i = 0; i < bursts.Length; i++)
+        {
+            TriggerRocketBurst(bursts[i], delay, burstDuration);
+            delay += spacing;
+        }
+    }
+
+    public void StepSimulation(float dt, int iterations = 1)
+    {
+        if (!_initialized && !Initialize())
+            return;
+
+        int steps = Mathf.Max(1, iterations);
+        float clampedDt = Mathf.Max(0.0001f, dt);
+        for (int i = 0; i < steps; i++)
+        {
+            RunFluidStep(clampedDt);
+        }
+        Visualize();
+    }
+
+    private void ProcessRocketBursts(float dt)
+    {
+        if (_scheduledRocketBursts.Count == 0 && _activeRocketBursts.Count == 0)
+            return;
+
+        for (int i = _scheduledRocketBursts.Count - 1; i >= 0; i--)
+        {
+            var scheduled = _scheduledRocketBursts[i];
+            scheduled.delay -= dt;
+            if (scheduled.delay <= 0f)
+            {
+                _activeRocketBursts.Add(new ActiveBurst
+                {
+                    burst = scheduled.burst,
+                    remainingDuration = scheduled.duration,
+                    modulateSurface = scheduled.modulateSurface
+                });
+                _scheduledRocketBursts.RemoveAt(i);
+            }
+            else
+            {
+                _scheduledRocketBursts[i] = scheduled;
+            }
+        }
+
+        for (int i = _activeRocketBursts.Count - 1; i >= 0; i--)
+        {
+            var active = _activeRocketBursts[i];
+            Burst burst = active.burst;
+            Vector2 velocity = burst.velocity == Vector2.zero ? sourceVelocity : burst.velocity;
+            InjectImpulse(burst.position, Mathf.Max(0.005f, burst.radius <= 0f ? sourceRadius * 0.5f : burst.radius),
+                Mathf.Max(0f, burst.density <= 0f ? sourceDensity : burst.density), velocity, dt,
+                active.modulateSurface && _hasSurfaceMap);
+            active.remainingDuration -= dt;
+            if (active.remainingDuration <= 0f)
+            {
+                _activeRocketBursts.RemoveAt(i);
+            }
+            else
+            {
+                _activeRocketBursts[i] = active;
+            }
+        }
+    }
+
+    private void ScheduleScriptedBurst(Burst burst, float delay, float duration, bool modulateSurface)
+    {
+        Burst adjusted = burst;
+        if (adjusted.radius <= 0f)
+        {
+            adjusted.radius = Mathf.Max(0.01f, sourceRadius * 0.6f);
+        }
+        if (adjusted.density <= 0f)
+        {
+            adjusted.density = Mathf.Max(0.1f, sourceDensity);
+        }
+        if (adjusted.velocity == Vector2.zero)
+        {
+            adjusted.velocity = sourceVelocity;
+        }
+
+        _scheduledRocketBursts.Add(new ScheduledBurst
+        {
+            burst = adjusted,
+            delay = Mathf.Max(0f, delay),
+            duration = Mathf.Max(0.0001f, duration),
+            modulateSurface = modulateSurface
+        });
     }
 
     private void InjectImpulse(Vector2 center, float radius, float density, Vector2 velocity, float dt, bool modulateSurface = false)
@@ -471,18 +683,52 @@ public class Weather2D : MonoBehaviour
         Dispatch(_kSubtract);
     }
 
-    private void RunMicrophysics()
+    private void RunMicrophysics(float dt)
     {
+        float condensation = condensationRate;
+        float evaporation = evaporationRate;
+        float precipitation = precipitationRate;
+        float latentHeat = latentHeatBuoyancy;
+
+        if (_rocketBoostTimer > 0f)
+        {
+            _rocketBoostTimer = Mathf.Max(0f, _rocketBoostTimer - dt);
+            condensation *= Mathf.Max(1f, _rocketCondensationMultiplier);
+            precipitation *= Mathf.Max(1f, _rocketPrecipitationMultiplier);
+            latentHeat *= Mathf.Max(1f, _rocketCondensationMultiplier);
+        }
+        else
+        {
+            _rocketCondensationMultiplier = 1f;
+            _rocketPrecipitationMultiplier = 1f;
+        }
+
         fluidCompute.SetFloat("_SaturationThreshold", saturationThreshold);
-        fluidCompute.SetFloat("_CondensationRate", condensationRate);
-        fluidCompute.SetFloat("_EvaporationRate", evaporationRate);
-        fluidCompute.SetFloat("_PrecipitationRate", precipitationRate);
-        fluidCompute.SetFloat("_LatentHeatBuoyancy", latentHeatBuoyancy);
+        fluidCompute.SetFloat("_CondensationRate", condensation);
+        fluidCompute.SetFloat("_EvaporationRate", evaporation);
+        fluidCompute.SetFloat("_PrecipitationRate", precipitation);
+        fluidCompute.SetFloat("_LatentHeatBuoyancy", latentHeat);
         fluidCompute.SetTexture(_kMicrophysics, "_MicroHumidity", _humidityA);
         fluidCompute.SetTexture(_kMicrophysics, "_MicroCloud", _cloudA);
         fluidCompute.SetTexture(_kMicrophysics, "_MicroVelocity", _velocityA);
         fluidCompute.SetTexture(_kMicrophysics, "_PrecipitationTex", _precipitation);
         Dispatch(_kMicrophysics);
+    }
+
+    private void ApplyUpperDamping()
+    {
+        if (upperDampingStrength <= 0f || _kUpperDamping < 0)
+            return;
+
+        float start = Mathf.Clamp01(upperDampingStart);
+        float strength = Mathf.Clamp01(upperDampingStrength);
+        if (start >= 0.999f || strength <= 0f)
+            return;
+
+        fluidCompute.SetFloat("_UpperDampingStart", start);
+        fluidCompute.SetFloat("_UpperDampingStrength", strength);
+        fluidCompute.SetTexture(_kUpperDamping, "_VelocityDamp", _velocityA);
+        Dispatch(_kUpperDamping);
     }
 
     private void GatherStatsAndUpdatePrecipitation(float dt)
@@ -640,8 +886,11 @@ public class Weather2D : MonoBehaviour
         _debugBuffer.SetData(zeros);
     }
 
-    private void ResetSimulation()
+    public void ResetSimulation()
     {
+        if (!_initialized && !Initialize())
+            return;
+
         ClearRenderTexture(_velocityA, Color.clear);
         ClearRenderTexture(_velocityB, Color.clear);
         ClearRenderTexture(_humidityA, Color.clear);
@@ -660,6 +909,10 @@ public class Weather2D : MonoBehaviour
         _latestAvgCloud = 0f;
         _latestAvgHumidity = 0f;
         _latestAvgSpeed = 0f;
+        _rocketBoostTimer = 0f;
+        _rocketCondensationMultiplier = 1f;
+        _rocketPrecipitationMultiplier = 1f;
+        ClearScriptedBursts();
     }
 
     private void EnsureDemoScenarios()
@@ -705,7 +958,8 @@ public class Weather2D : MonoBehaviour
                         velocity = new Vector2(0.4f, 2.2f)
                     }
                 },
-                loopInterval = 0.75f
+                loopInterval = 0.75f,
+                precipitationFeedbackOverride = -1f
             },
             new DemoScenario
             {
@@ -750,7 +1004,8 @@ public class Weather2D : MonoBehaviour
                         velocity = new Vector2(-1.4f, 1.6f)
                     }
                 },
-                loopInterval = 1.25f
+                loopInterval = 1.25f,
+                precipitationFeedbackOverride = -1f
             },
             new DemoScenario
             {
@@ -781,14 +1036,80 @@ public class Weather2D : MonoBehaviour
                     }
                 },
                 loopBursts = null,
-                loopInterval = 0f
+                loopInterval = 0f,
+                precipitationFeedbackOverride = -1f
+            },
+            new DemoScenario
+            {
+                name = "Rocket Rain",
+                densityDissipation = 0.9998f,
+                velocityDissipation = 0.997f,
+                sourceRadius = 0.18f,
+                sourceDensity = 24f,
+                sourceHeight = 0.1f,
+                sourceVelocity = new Vector2(0f, 2.2f),
+                timeScale = 0.45f,
+                disableBaseSource = true,
+                initialBursts = new[]
+                {
+                    new Burst
+                    {
+                        position = new Vector2(0.5f, 0.08f),
+                        radius = 0.28f,
+                        density = 42f,
+                        velocity = new Vector2(0f, 2.6f)
+                    },
+                    new Burst
+                    {
+                        position = new Vector2(0.36f, 0.16f),
+                        radius = 0.16f,
+                        density = 28f,
+                        velocity = new Vector2(0.6f, 2.4f)
+                    },
+                    new Burst
+                    {
+                        position = new Vector2(0.64f, 0.16f),
+                        radius = 0.16f,
+                        density = 28f,
+                        velocity = new Vector2(-0.6f, 2.4f)
+                    },
+                    new Burst
+                    {
+                        position = new Vector2(0.5f, 0.32f),
+                        radius = 0.14f,
+                        density = 24f,
+                        velocity = new Vector2(0f, 2.2f)
+                    }
+                },
+                loopBursts = null,
+                loopInterval = 0f,
+                rocketDelay = 3f,
+                rocketBurstDuration = 0.32f,
+                rocketBurstInterval = 0.16f,
+                rocketBursts = new[]
+                {
+                    new Burst { position = new Vector2(0.5f, 0.08f), radius = 0.11f, density = 48f, velocity = new Vector2(0f, 3.2f) },
+                    new Burst { position = new Vector2(0.5f, 0.22f), radius = 0.09f, density = 42f, velocity = new Vector2(0f, 3.4f) },
+                    new Burst { position = new Vector2(0.5f, 0.36f), radius = 0.08f, density = 38f, velocity = new Vector2(0f, 3.5f) },
+                    new Burst { position = new Vector2(0.5f, 0.5f), radius = 0.07f, density = 30f, velocity = new Vector2(0f, 3.6f) },
+                    new Burst { position = new Vector2(0.5f, 0.66f), radius = 0.07f, density = 26f, velocity = new Vector2(0f, 3.7f) }
+                },
+                disableBaseSourceAfterRocket = true,
+                rocketBoostDuration = 2.5f,
+                rocketCondensationMultiplier = 2.2f,
+                rocketPrecipitationMultiplier = 3f,
+                disablePrecipitationFeedback = true,
+                precipitationFeedbackOverride = 0f
             }
         };
     }
 
-    private void ApplyDemo(int index)
+    public void ApplyDemo(int index)
     {
         if (demoScenarios == null || demoScenarios.Length == 0)
+            return;
+
+        if (!_initialized && !Initialize())
             return;
 
         int clamped = Mathf.Clamp(index, 0, demoScenarios.Length - 1);
@@ -805,7 +1126,9 @@ public class Weather2D : MonoBehaviour
         _loopTimer = Mathf.Max(0f, scenario.loopInterval);
         _useBaseSource = !scenario.disableBaseSource;
         _scenarioTimeScale = scenario.timeScale > 0f ? scenario.timeScale : 1f;
+        ApplyPrecipitationFeedbackOverride(scenario);
 
+        ClearScriptedBursts();
         ResetSimulation();
         if (scenario.initialBursts != null)
         {
@@ -819,6 +1142,28 @@ public class Weather2D : MonoBehaviour
         }
 
         Visualize();
+        DemoApplied?.Invoke(_currentScenario);
+    }
+
+    private void ApplyPrecipitationFeedbackOverride(DemoScenario scenario)
+    {
+        if (!_initialized)
+            return;
+
+        if (scenario.disablePrecipitationFeedback)
+        {
+            precipitationFeedback = 0f;
+            return;
+        }
+
+        if (scenario.precipitationFeedbackOverride >= 0f)
+        {
+            precipitationFeedback = scenario.precipitationFeedbackOverride;
+        }
+        else
+        {
+            precipitationFeedback = _defaultPrecipitationFeedback;
+        }
     }
 
     private void OnGUI()

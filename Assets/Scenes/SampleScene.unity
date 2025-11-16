@@ -360,6 +360,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1444792838}
   - component: {fileID: 1444792837}
+  - component: {fileID: 1444792840}
   m_Layer: 0
   m_Name: Weather Controller
   m_TagString: Untagged
@@ -415,6 +416,26 @@ MonoBehaviour:
   addMoistureKey: 324
   uiTarget: {fileID: 0}
   filter: 1
+--- !u!114 &1444792840
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1444792836}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 17e46f4ad04d4522ba1637e833e22df8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  weather: {fileID: 1444792837}
+  rocketVisual: {fileID: 0}
+  autoLaunch: 1
+  createVisualIfMissing: 1
+  visualScale: {x: 4.5, y: 4.5}
+  defaultBurstDuration: 0.25
+  defaultBurstInterval: 0.18
+  visualGroundOffset: -2.25
 --- !u!4 &1444792838
 Transform:
   m_ObjectHideFlags: 0

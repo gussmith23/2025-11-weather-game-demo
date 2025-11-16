@@ -204,6 +204,29 @@ public class WeatherFluidTests
         Assert.Less(stats.totalWater, initial.totalWater * 0.8f, "Precipitation should bleed water mass out of the column.");
         Assert.Less(stats.avgCloud, initial.avgCloud * 0.5f, "Cloud reservoir should shrink under heavy precipitation.");
     }
+
+    [Test]
+    public void RocketStyleColumnGeneratesPrecipitation()
+    {
+        ClearRTCompute(humidityA, 0.35f);
+        ClearRTCompute(cloudA, 0f);
+        ClearRenderTexture(velocityA);
+
+        InjectImpulse(new Vector2(0.5f, 0.08f), 0.09f, 42f, new Vector2(0f, 3.2f), 0.18f);
+        InjectImpulse(new Vector2(0.5f, 0.24f), 0.07f, 30f, new Vector2(0f, 3.4f), 0.14f);
+        InjectImpulse(new Vector2(0.5f, 0.4f), 0.06f, 26f, new Vector2(0f, 3.5f), 0.12f);
+        InjectImpulse(new Vector2(0.5f, 0.56f), 0.05f, 22f, new Vector2(0f, 3.6f), 0.1f);
+
+        for (int i = 0; i < 12; i++)
+        {
+            RunFluidStep(0.012f, 28);
+        }
+
+        FluidStats stats = SampleStats();
+        Assert.Greater(stats.avgCloud, 0.015f, "Stacked impulses should build a visible cloud column.");
+        Assert.Greater(stats.avgPrecip, 0.0002f, "Rocket-style column should create measurable precipitation.");
+        Assert.Greater(stats.avgSpeed, 0.002f, "Updraft should stay active throughout the column.");
+    }
     private void RunFluidStep(float dt, int jacobiIterations)
     {
         shader.SetFloat("_DeltaTime", dt);

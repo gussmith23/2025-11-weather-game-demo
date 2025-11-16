@@ -1,14 +1,10 @@
 {
-    "name": "WeatherSandbox.EditModeTests",
+    "name": "WeatherSandbox.Runtime",
     "references": [
-        "GUID:b2fb461d81624be49b162e1a35eaba40"
+        "GUID:75469ad4d38634e559750d17036d5f7c"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
-    "optionalUnityReferences": [
-        "TestAssemblies"
-    ],
+    "includePlatforms": [],
+    "optionalUnityReferences": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,
     "precompiledReferences": [],

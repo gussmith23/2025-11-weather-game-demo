@@ -1,4 +1,4 @@
 ﻿<Solution>
-  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="WeatherSandbox.Runtime.csproj" />
   <Project Path="WeatherSandbox.EditModeTests.csproj" />
 </Solution>

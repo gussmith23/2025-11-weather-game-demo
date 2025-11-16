@@ -8,6 +8,7 @@
 #pragma kernel Visualize
 #pragma kernel MoistureMicrophysics
 #pragma kernel ComputeStats
+#pragma kernel ApplyUpperDamping
 
 // 8x8 threads cover 64 pixels per group
 #define THREADS_X 8
@@ -45,6 +46,9 @@ cbuffer SimParams
     float _CloudGain;
     float _SourceMapBlend;
     float3 _UnusedPad;
+    float _UpperDampingStart;
+    float _UpperDampingStrength;
+    float2 _UnusedPad2;
 };
 
 float2 clampUV(float2 uv)
@@ -364,4 +368,23 @@ void ComputeStats(uint3 id : SV_DispatchThreadID)
     _DebugBuffer[9] = precipMax;
     _DebugBuffer[10] = precipSum;
     _DebugBuffer[11] = 0.0;
+}
+RWTexture2D<float2> _VelocityDamp;
+// ---------------------------------------------------------------------------
+// Upper-layer damping to keep flow within view
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplyUpperDamping(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    if (_UpperDampingStrength <= 0.0001 || _UpperDampingStart >= 0.9999)
+        return;
+
+    float t = saturate((uv.y - _UpperDampingStart) / max(0.0001, 1.0 - _UpperDampingStart));
+    float damp = lerp(1.0, 1.0 - saturate(_UpperDampingStrength), t);
+    float2 vel = _VelocityDamp[coord];
+    _VelocityDamp[coord] = vel * damp;
 }
