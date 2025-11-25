@@ -22,22 +22,43 @@ public class Weather2DRocketTests
             new Weather2D.Burst { position = new Vector2(0.5f, 0.52f), radius = 0.05f, density = 22f, velocity = new Vector2(0f, 3.6f) }
         };
 
-        float baselineHumidity = weather.LatestAvgHumidity;
+        weather.TriggerRocketBurst(new Weather2D.Burst
+        {
+            position = new Vector2(0.4f, 0.16f),
+            radius = 0.15f,
+            density = 32f,
+            velocity = new Vector2(0.6f, 2.6f)
+        }, 0f, 0.5f);
 
         weather.TriggerRocketBurst(new Weather2D.Burst
         {
-            position = new Vector2(0.5f, 0.05f),
-            radius = 0.22f,
-            density = 60f,
-            velocity = new Vector2(0f, 2.3f)
-        }, 0f, 0.6f);
+            position = new Vector2(0.6f, 0.16f),
+            radius = 0.15f,
+            density = 32f,
+            velocity = new Vector2(-0.6f, 2.6f)
+        }, 0f, 0.5f);
 
-        weather.TriggerRocketBoost(1.5f, 2.5f, 3f);
-        weather.TriggerRocketSequence(bursts, 0.35f, 0.12f, 0.22f);
-        weather.StepSimulation(0.01f, 700);
+        weather.StepSimulation(0.01f, 240);
+        float baselinePrecip = weather.LatestAvgPrecip;
+        float baselineCloud = weather.LatestAvgCloud;
+        float baselineHumidity = weather.LatestAvgHumidity;
 
-        Assert.Greater(weather.LatestAvgHumidity, baselineHumidity + 0.0005f, "Rocket-triggered bursts should moisten the column measurably.");
-        Assert.Greater(weather.LatestAvgSpeed, 0.0005f, "Rocket sequence should energize the flow and create an updraft.");
+        weather.TriggerRocketSequence(bursts, 0.2f, 0.1f, 0.18f);
+        weather.TriggerRocketBoost(1.0f, 3.5f, 5f);
+        weather.TriggerRocketBurst(new Weather2D.Burst
+        {
+            position = new Vector2(0.5f, 0.72f),
+            radius = 0.05f,
+            density = 0f,
+            velocity = Vector2.zero,
+            heat = 10f,
+            turbulence = 2.5f
+        }, 0.6f, 0.22f);
+        weather.StepSimulation(0.01f, 520);
+
+        Assert.Less(weather.LatestAvgCloud, baselineCloud * 0.85f, "Rocket detonation should reduce cloud water compared to baseline.");
+        Assert.Less(weather.LatestAvgHumidity, baselineHumidity * 0.95f, "Rocket detonation should dry out the column relative to baseline.");
+        Assert.Greater(weather.LatestAvgSpeed, 0.0005f, "Rocket sequence should energize the flow.");
         Assert.AreEqual(0, weather.PendingRocketBurstCount, "All scripted rocket bursts should be consumed after the simulation run.");
 
         Object.DestroyImmediate(go);

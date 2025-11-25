@@ -12,6 +12,10 @@ public class WeatherFluidTests
     private RenderTexture humidityB;
     private RenderTexture cloudA;
     private RenderTexture cloudB;
+    private RenderTexture temperatureA;
+    private RenderTexture temperatureB;
+    private RenderTexture turbulenceA;
+    private RenderTexture turbulenceB;
     private RenderTexture pressureA;
     private RenderTexture pressureB;
     private RenderTexture divergence;
@@ -28,6 +32,14 @@ public class WeatherFluidTests
     private int kClear;
     private int kStats;
     private int kMicrophysics;
+    private const float TemperatureDissipation = 0.9985f;
+    private const float TurbulenceDissipation = 0.995f;
+    private const float TemperatureSaturationFactor = 0.08f;
+    private const float LatentHeatTemperatureGain = 1.2f;
+    private const float EvaporationCoolingFactor = 0.8f;
+    private const float TurbulencePrecipitationFactor = 2.0f;
+    private const float TemperatureDecay = 0.6f;
+    private const float TurbulenceDecay = 1.5f;
 
     private struct FluidStats
     {
@@ -70,6 +82,10 @@ public class WeatherFluidTests
         humidityB = CreateScalarRT();
         cloudA = CreateScalarRT();
         cloudB = CreateScalarRT();
+        temperatureA = CreateScalarRT();
+        temperatureB = CreateScalarRT();
+        turbulenceA = CreateScalarRT();
+        turbulenceB = CreateScalarRT();
         pressureA = CreateScalarRT(RenderTextureFormat.RFloat);
         pressureB = CreateScalarRT(RenderTextureFormat.RFloat);
         divergence = CreateScalarRT(RenderTextureFormat.RFloat);
@@ -80,6 +96,10 @@ public class WeatherFluidTests
         ClearRenderTexture(humidityB);
         ClearRenderTexture(cloudA);
         ClearRenderTexture(cloudB);
+        ClearRenderTexture(temperatureA);
+        ClearRenderTexture(temperatureB);
+        ClearRenderTexture(turbulenceA);
+        ClearRenderTexture(turbulenceB);
         ClearRenderTexture(pressureA);
         ClearRenderTexture(pressureB);
         ClearRenderTexture(divergence);
@@ -101,6 +121,10 @@ public class WeatherFluidTests
         ReleaseRT(ref humidityB);
         ReleaseRT(ref cloudA);
         ReleaseRT(ref cloudB);
+        ReleaseRT(ref temperatureA);
+        ReleaseRT(ref temperatureB);
+        ReleaseRT(ref turbulenceA);
+        ReleaseRT(ref turbulenceB);
         ReleaseRT(ref pressureA);
         ReleaseRT(ref pressureB);
         ReleaseRT(ref divergence);
@@ -236,6 +260,8 @@ public class WeatherFluidTests
         AdvectVelocity();
         AdvectHumidity();
         AdvectCloud();
+        AdvectTemperature();
+        AdvectTurbulence();
         ProjectVelocity(jacobiIterations);
         RunMicrophysics();
     }
@@ -260,6 +286,8 @@ public class WeatherFluidTests
         }
         AdvectHumidity();
         AdvectCloud();
+        AdvectTemperature();
+        AdvectTurbulence();
         if (DumpStepStats)
         {
             FluidStats afterHumidity = SampleStats();
@@ -281,6 +309,12 @@ public class WeatherFluidTests
         shader.SetFloat("_EvaporationRate", evaporation);
         shader.SetFloat("_PrecipitationRate", precipitation);
         shader.SetFloat("_LatentHeatBuoyancy", buoyancy);
+        shader.SetFloat("_TemperatureSaturationFactor", TemperatureSaturationFactor);
+        shader.SetFloat("_LatentHeatTemperatureGain", LatentHeatTemperatureGain);
+        shader.SetFloat("_EvaporationCoolingFactor", EvaporationCoolingFactor);
+        shader.SetFloat("_TurbulencePrecipFactor", TurbulencePrecipitationFactor);
+        shader.SetFloat("_TemperatureDecay", TemperatureDecay);
+        shader.SetFloat("_TurbulenceDecay", TurbulenceDecay);
     }
 
     private void InjectImpulse(Vector2 center, float radius, float density, Vector2 velocity, float dt)
@@ -291,9 +325,13 @@ public class WeatherFluidTests
         shader.SetVector("_SourceVelocity", new Vector4(velocity.x * dt, velocity.y * dt, 0f, 0f));
         shader.SetFloat("_SourceFeather", 0.03f);
         shader.SetFloat("_SourceMapBlend", 0f);
+        shader.SetFloat("_SourceHeat", 0f);
+        shader.SetFloat("_SourceTurbulence", 0f);
 
         shader.SetTexture(kInject, "_Velocity", velocityA);
         shader.SetTexture(kInject, "_Humidity", humidityA);
+        shader.SetTexture(kInject, "_Temperature", temperatureA);
+        shader.SetTexture(kInject, "_Turbulence", turbulenceA);
         DispatchSimulation(kInject);
     }
 
@@ -307,6 +345,7 @@ public class WeatherFluidTests
 
     private void AdvectHumidity()
     {
+        shader.SetFloat("_DensityDissipation", 0.999f);
         shader.SetTexture(kAdvectScalar, "_ScalarFieldRead", humidityA);
         shader.SetTexture(kAdvectScalar, "_ScalarFieldWrite", humidityB);
         shader.SetTexture(kAdvectScalar, "_ScalarVelocity", velocityA);
@@ -316,6 +355,7 @@ public class WeatherFluidTests
 
     private void AdvectCloud()
     {
+        shader.SetFloat("_DensityDissipation", 0.999f);
         shader.SetTexture(kAdvectScalar, "_ScalarFieldRead", cloudA);
         shader.SetTexture(kAdvectScalar, "_ScalarFieldWrite", cloudB);
         shader.SetTexture(kAdvectScalar, "_ScalarVelocity", velocityA);
@@ -323,11 +363,33 @@ public class WeatherFluidTests
         Swap(ref cloudA, ref cloudB);
     }
 
+    private void AdvectTemperature()
+    {
+        shader.SetFloat("_DensityDissipation", TemperatureDissipation);
+        shader.SetTexture(kAdvectScalar, "_ScalarFieldRead", temperatureA);
+        shader.SetTexture(kAdvectScalar, "_ScalarFieldWrite", temperatureB);
+        shader.SetTexture(kAdvectScalar, "_ScalarVelocity", velocityA);
+        DispatchSimulation(kAdvectScalar);
+        Swap(ref temperatureA, ref temperatureB);
+    }
+
+    private void AdvectTurbulence()
+    {
+        shader.SetFloat("_DensityDissipation", TurbulenceDissipation);
+        shader.SetTexture(kAdvectScalar, "_ScalarFieldRead", turbulenceA);
+        shader.SetTexture(kAdvectScalar, "_ScalarFieldWrite", turbulenceB);
+        shader.SetTexture(kAdvectScalar, "_ScalarVelocity", velocityA);
+        DispatchSimulation(kAdvectScalar);
+        Swap(ref turbulenceA, ref turbulenceB);
+    }
+
     private void RunMicrophysics()
     {
         shader.SetTexture(kMicrophysics, "_MicroHumidity", humidityA);
         shader.SetTexture(kMicrophysics, "_MicroCloud", cloudA);
         shader.SetTexture(kMicrophysics, "_MicroVelocity", velocityA);
+        shader.SetTexture(kMicrophysics, "_MicroTemperature", temperatureA);
+        shader.SetTexture(kMicrophysics, "_MicroTurbulence", turbulenceA);
         shader.SetTexture(kMicrophysics, "_PrecipitationTex", precipitation);
         DispatchSimulation(kMicrophysics);
     }

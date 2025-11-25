@@ -82,6 +82,22 @@
 - Prevented unwanted continual moisture injection in the Rocket Rain preset by introducing scenario-level precipitation feedback overrides. `DemoScenario` now carries `disablePrecipitationFeedback` / `precipitationFeedbackOverride`, and `Weather2D.ApplyDemo` restores the default feedback when scenarios don’t specify one. Rocket Rain turns the feedback loop off entirely so the scene evolves solely from the initial bursts plus the rocket.
 - Updated Rocket Rain initial conditions (larger single-shot bursts, no base source, slower time scale) to ensure clouds linger within the visible area without replenishment. The rocket path still injects heat/moisture and now benefits from the damping so the plume tops don’t leave the view.
 - Tests: `Weather2DRocketTests` assertions now focus on humidity/velocity boosts and burst depletion (instead of fragile precipitation/cloud thresholds). Unity Edit Mode suite passes in batch mode after these changes.
+
+## 2025-11-15 – Rocket Rain cloud seeding tweak
+- Simplified the Rocket Rain preset to a single Cloud-Merger-style Gaussian burst (centered at 0.5, 0.18 UV with radius 0.22, density ~40, and a strong upward kick). This keeps the initial convection compact, avoids constant side injections, and mirrors the quick “puff” behavior from the Cloud Merger demo so the rocket’s perturbation reads clearly.
+
+## 2025-11-16 – Rocket heat-only effect
+- Removed humidity/velocity payloads from the scripted `rocketBursts` so the ascending rocket no longer spawns a secondary plume. The only energy it adds now is via `TriggerRocketBoost` (microphysics multipliers) and a new optional `rocketExplosion` burst fired once the rocket reaches the top.
+- Rocket Rain defines that explosion near 0.72 UV (radius 0.14, density 28, upward velocity 3.2) with a short duration, simulating a localized heat injection at detonation. `DemoScenario` gained `triggerRocketExplosion`/`rocketExplosion`/`rocketExplosionDuration`, and `RocketController` now triggers the burst when present.
+
+## 2025-11-16 – Rocket effect localization
+- Shortened the rocket boost window (≈1.2 s) and increased its amplification, so heat acts only near the explosion instead of warming the full ascent. The scripted explosion burst now has a tiny radius (0.06), lower density (22), and minimal upward kick (1.2), ensuring the only noticeable plume appears at the detonation point. Scenario timing was tightened (0.2 s burst duration, 0.12 spacing) to keep the rocket animation crisp.
+
+## 2025-11-16 – Thermodynamic field + precipitation destruction pass
+- Added temperature and turbulence render targets to the compute shader. The inject kernel now accepts `_SourceHeat` / `_SourceTurbulence`, so rocket events (and future heaters) can add energy without extra vapor. These scalars advect with the flow, feed into the new microphysics logic, and decay via configurable dissipation parameters.
+- Microphysics now reads temperature/turbulence to compute cell-by-cell saturation, add/remove latent heat, and scale precipitation efficiency. Condensation warms the column, evaporation cools it, and turbulence spikes (e.g., from rocket detonation) temporarily boost precipitation before decaying.
+- Rocket scenarios set their ascent bursts to zero humidity, rely on `TriggerRocketBoost`, and fire a compact heat pulse at detonation. The new inspector knobs (`temperatureDissipation`, `temperatureSaturationFactor`, etc.) expose how strongly heat converts cloud water into rain.
+- Tests: `WeatherFluidTests` gained temperature/turbulence textures and uses the updated kernels, and `Weather2DRocketTests` now compare pre/post-rocket cloud/humidity to ensure the new destruction loop actually thins the cloud while energizing the flow. Unity Edit Mode suite remains green via the usual batch command.
 ## 2025-11-15 – Chat session recap
 - Ensured Unity CLI path was correct, reviewed AGENTS instructions, and re-synced with repo goals (rocket-triggered rain demo for milestone 1). Verified prior tests, read codex-notes, and inspected Weather2D/SampleScene state.
 - Implemented scripted rocket support: added burst queues, public injection APIs, and exposure of live stats; created RocketController and wired it into SampleScene; expanded DemoScenario with rocket metadata and shipped a Rocket Rain preset plus GUI hook.

@@ -8,8 +8,8 @@ using UnityEngine.InputSystem;
 #endif
 
 /// <summary>
-/// GPU-driven 2D fluid core based on a staggered-grid style pipeline
-/// (pressure solve -> velocity projection -> scalar advection).
+/// GPU-driven 2D weather sandbox that advects velocity, humidity, temperature,
+/// turbulence, and cloud water fields through a compute-shader pipeline.
 /// </summary>
 public class Weather2D : MonoBehaviour
 {
@@ -94,6 +94,24 @@ public class Weather2D : MonoBehaviour
     public bool enableSurfaceForcing = false;
     public Texture2D surfaceMoistureMap;
 
+    [Header("Thermodynamics")]
+    [Range(0.9f, 1f)]
+    public float temperatureDissipation = 0.9985f;
+    [Range(0.9f, 1f)]
+    public float turbulenceDissipation = 0.995f;
+    [Range(0f, 1f)]
+    public float temperatureSaturationFactor = 0.08f;
+    [Range(0f, 10f)]
+    public float latentHeatTemperatureGain = 1.2f;
+    [Range(0f, 10f)]
+    public float evaporationCoolingFactor = 0.8f;
+    [Range(0f, 10f)]
+    public float turbulencePrecipitationFactor = 2.0f;
+    [Range(0f, 10f)]
+    public float temperatureDecay = 0.6f;
+    [Range(0f, 10f)]
+    public float turbulenceDecay = 1.5f;
+
     [Header("Flow Limits")]
     [Range(0.5f, 0.99f)]
     public float upperDampingStart = 0.82f;
@@ -113,6 +131,10 @@ public class Weather2D : MonoBehaviour
     private RenderTexture _humidityB;
     private RenderTexture _cloudA;
     private RenderTexture _cloudB;
+    private RenderTexture _temperatureA;
+    private RenderTexture _temperatureB;
+    private RenderTexture _turbulenceA;
+    private RenderTexture _turbulenceB;
     private RenderTexture _pressureA;
     private RenderTexture _pressureB;
     private RenderTexture _divergence;
@@ -186,6 +208,8 @@ public class Weather2D : MonoBehaviour
         public float radius;
         public float density;
         public Vector2 velocity;
+        public float heat;
+        public float turbulence;
     }
 
     [System.Serializable]
@@ -213,8 +237,14 @@ public class Weather2D : MonoBehaviour
         public float rocketPrecipitationMultiplier;
         public bool disablePrecipitationFeedback;
         public float precipitationFeedbackOverride;
+        public bool triggerRocketExplosion;
+        public Burst rocketExplosion;
+        public float rocketExplosionDuration;
     }
 
+    /// <summary>
+    /// Cache kernels, allocate buffers, and populate baseline demo data.
+    /// </summary>
     private void Awake()
     {
         if (!Initialize())
@@ -223,6 +253,9 @@ public class Weather2D : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Lazy initialization path so tests can spin up Weather2D headlessly.
+    /// </summary>
     private bool Initialize()
     {
         if (_initialized)
@@ -259,6 +292,9 @@ public class Weather2D : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// Apply initial demo and optional sounding when the scene boots.
+    /// </summary>
     private void Start()
     {
         if (!Initialize())
@@ -286,6 +322,10 @@ public class Weather2D : MonoBehaviour
         Release(ref _humidityB);
         Release(ref _cloudA);
         Release(ref _cloudB);
+        Release(ref _temperatureA);
+        Release(ref _temperatureB);
+        Release(ref _turbulenceA);
+        Release(ref _turbulenceB);
         Release(ref _pressureA);
         Release(ref _pressureB);
         Release(ref _divergence);
@@ -302,6 +342,9 @@ public class Weather2D : MonoBehaviour
     }
 #endif
 
+    /// <summary>
+    /// Allocate all simulation render targets and the stats buffer.
+    /// </summary>
     private void AllocateTextures()
     {
         _dispatch = new Vector2Int(
@@ -314,6 +357,10 @@ public class Weather2D : MonoBehaviour
         _humidityB = CreateScalarRT();
         _cloudA = CreateScalarRT();
         _cloudB = CreateScalarRT();
+        _temperatureA = CreateScalarRT();
+        _temperatureB = CreateScalarRT();
+        _turbulenceA = CreateScalarRT();
+        _turbulenceB = CreateScalarRT();
         _pressureA = CreateScalarRT(RenderTextureFormat.RFloat);
         _pressureB = CreateScalarRT(RenderTextureFormat.RFloat);
         _divergence = CreateScalarRT(RenderTextureFormat.RFloat);
@@ -413,6 +460,9 @@ public class Weather2D : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Main Unity update loop: advance substeps, visualize, and log stats.
+    /// </summary>
     private void Update()
     {
         if (!_initialized && !Initialize())
@@ -437,6 +487,9 @@ public class Weather2D : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Execute one simulation substep (force, advect, project, microphysics).
+    /// </summary>
     private void RunFluidStep(float dt)
     {
         fluidCompute.SetFloat("_DeltaTime", dt);
@@ -475,6 +528,8 @@ public class Weather2D : MonoBehaviour
         AdvectVelocity();
         AdvectHumidity();
         AdvectCloud();
+        AdvectTemperature();
+        AdvectTurbulence();
         ProjectVelocity();
         ApplyUpperDamping();
         RunMicrophysics(dt);
@@ -482,6 +537,9 @@ public class Weather2D : MonoBehaviour
         _stepsCompleted++;
     }
 
+    /// <summary>
+    /// Temporarily amplify condensation/precipitation rates to mimic a heat burst.
+    /// </summary>
     public void TriggerRocketBoost(float duration, float condensationMultiplier, float precipitationMultiplier)
     {
         _rocketBoostTimer = Mathf.Max(_rocketBoostTimer, Mathf.Max(0f, duration));
@@ -489,27 +547,34 @@ public class Weather2D : MonoBehaviour
         _rocketPrecipitationMultiplier = Mathf.Max(1f, precipitationMultiplier);
     }
 
+    /// <summary>Enable/disable the perpetual ground forcing plume.</summary>
     public void SetBaseSourceActive(bool active)
     {
         _useBaseSource = active;
     }
 
+    /// <summary>Flush any scheduled rocket bursts/explosions.</summary>
     public void ClearScriptedBursts()
     {
         _scheduledRocketBursts.Clear();
         _activeRocketBursts.Clear();
     }
 
+    /// <summary>Enqueue a single scripted burst with no delay.</summary>
     public void TriggerRocketBurst(Burst burst, float duration)
     {
         TriggerRocketBurst(burst, 0f, duration);
     }
 
+    /// <summary>Enqueue a burst with optional delay and duration.</summary>
     public void TriggerRocketBurst(Burst burst, float delay, float duration)
     {
         ScheduleScriptedBurst(burst, delay, duration, false);
     }
 
+    /// <summary>
+    /// Enqueue a sequence of bursts spaced out by interval (rocket ascent path).
+    /// </summary>
     public void TriggerRocketSequence(Burst[] bursts, float initialDelay, float interval, float duration)
     {
         if (bursts == null || bursts.Length == 0)
@@ -525,6 +590,7 @@ public class Weather2D : MonoBehaviour
         }
     }
 
+    /// <summary>Helper for tests to advance the sim deterministically.</summary>
     public void StepSimulation(float dt, int iterations = 1)
     {
         if (!_initialized && !Initialize())
@@ -539,6 +605,9 @@ public class Weather2D : MonoBehaviour
         Visualize();
     }
 
+    /// <summary>
+    /// Update countdowns for scheduled bursts and apply any active injections.
+    /// </summary>
     private void ProcessRocketBursts(float dt)
     {
         if (_scheduledRocketBursts.Count == 0 && _activeRocketBursts.Count == 0)
@@ -571,7 +640,9 @@ public class Weather2D : MonoBehaviour
             Vector2 velocity = burst.velocity == Vector2.zero ? sourceVelocity : burst.velocity;
             InjectImpulse(burst.position, Mathf.Max(0.005f, burst.radius <= 0f ? sourceRadius * 0.5f : burst.radius),
                 Mathf.Max(0f, burst.density <= 0f ? sourceDensity : burst.density), velocity, dt,
-                active.modulateSurface && _hasSurfaceMap);
+                active.modulateSurface && _hasSurfaceMap,
+                burst.heat,
+                burst.turbulence);
             active.remainingDuration -= dt;
             if (active.remainingDuration <= 0f)
             {
@@ -584,6 +655,9 @@ public class Weather2D : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Clamp/sanitize burst parameters and push them onto the scheduled list.
+    /// </summary>
     private void ScheduleScriptedBurst(Burst burst, float delay, float duration, bool modulateSurface)
     {
         Burst adjusted = burst;
@@ -591,13 +665,21 @@ public class Weather2D : MonoBehaviour
         {
             adjusted.radius = Mathf.Max(0.01f, sourceRadius * 0.6f);
         }
-        if (adjusted.density <= 0f)
+        if (adjusted.density < 0f)
         {
             adjusted.density = Mathf.Max(0.1f, sourceDensity);
         }
         if (adjusted.velocity == Vector2.zero)
         {
             adjusted.velocity = sourceVelocity;
+        }
+        if (adjusted.heat < 0f)
+        {
+            adjusted.heat = 0f;
+        }
+        if (adjusted.turbulence < 0f)
+        {
+            adjusted.turbulence = 0f;
         }
 
         _scheduledRocketBursts.Add(new ScheduledBurst
@@ -609,7 +691,10 @@ public class Weather2D : MonoBehaviour
         });
     }
 
-    private void InjectImpulse(Vector2 center, float radius, float density, Vector2 velocity, float dt, bool modulateSurface = false)
+    /// <summary>
+    /// Write density/velocity/temperature/turbulence sources into the compute shader.
+    /// </summary>
+    private void InjectImpulse(Vector2 center, float radius, float density, Vector2 velocity, float dt, bool modulateSurface = false, float heat = 0f, float turbulence = 0f)
     {
         fluidCompute.SetVector("_SourceCenter", new Vector4(center.x, center.y, 0f, 0f));
         fluidCompute.SetFloat("_SourceRadius", Mathf.Max(0.001f, radius));
@@ -618,15 +703,20 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_SourceFeather", Mathf.Max(0.0001f, sourceFeather));
         float blend = modulateSurface && _hasSurfaceMap ? 1f : 0f;
         fluidCompute.SetFloat("_SourceMapBlend", blend);
+        fluidCompute.SetFloat("_SourceHeat", heat * dt);
+        fluidCompute.SetFloat("_SourceTurbulence", turbulence * dt);
         Texture surfaceTex = surfaceMoistureMap != null ? surfaceMoistureMap : Texture2D.whiteTexture;
         fluidCompute.SetTexture(_kInject, "_SurfaceMoistureTex", surfaceTex);
         fluidCompute.SetBuffer(_kInject, "_DebugBuffer", _debugBuffer);
 
         fluidCompute.SetTexture(_kInject, "_Velocity", _velocityA);
         fluidCompute.SetTexture(_kInject, "_Humidity", _humidityA);
+        fluidCompute.SetTexture(_kInject, "_Temperature", _temperatureA);
+        fluidCompute.SetTexture(_kInject, "_Turbulence", _turbulenceA);
         Dispatch(_kInject);
     }
 
+    /// <summary>Advect the velocity grid.</summary>
     private void AdvectVelocity()
     {
         fluidCompute.SetTexture(_kAdvectVelocity, "_VectorFieldRead", _velocityA);
@@ -636,8 +726,10 @@ public class Weather2D : MonoBehaviour
         Swap(ref _velocityA, ref _velocityB);
     }
 
+    /// <summary>Advect the humidity scalar.</summary>
     private void AdvectHumidity()
     {
+        fluidCompute.SetFloat("_DensityDissipation", densityDissipation);
         fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldRead", _humidityA);
         fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldWrite", _humidityB);
         fluidCompute.SetTexture(_kAdvectScalar, "_ScalarVelocity", _velocityA);
@@ -646,8 +738,10 @@ public class Weather2D : MonoBehaviour
         Swap(ref _humidityA, ref _humidityB);
     }
 
+    /// <summary>Advect cloud water.</summary>
     private void AdvectCloud()
     {
+        fluidCompute.SetFloat("_DensityDissipation", densityDissipation);
         fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldRead", _cloudA);
         fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldWrite", _cloudB);
         fluidCompute.SetTexture(_kAdvectScalar, "_ScalarVelocity", _velocityA);
@@ -656,6 +750,31 @@ public class Weather2D : MonoBehaviour
         Swap(ref _cloudA, ref _cloudB);
     }
 
+    /// <summary>Advect the temperature field.</summary>
+    private void AdvectTemperature()
+    {
+        fluidCompute.SetFloat("_DensityDissipation", Mathf.Clamp01(temperatureDissipation));
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldRead", _temperatureA);
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldWrite", _temperatureB);
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarVelocity", _velocityA);
+        fluidCompute.SetBuffer(_kAdvectScalar, "_DebugBuffer", _debugBuffer);
+        Dispatch(_kAdvectScalar);
+        Swap(ref _temperatureA, ref _temperatureB);
+    }
+
+    /// <summary>Advect the turbulence intensity proxy.</summary>
+    private void AdvectTurbulence()
+    {
+        fluidCompute.SetFloat("_DensityDissipation", Mathf.Clamp01(turbulenceDissipation));
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldRead", _turbulenceA);
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldWrite", _turbulenceB);
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarVelocity", _velocityA);
+        fluidCompute.SetBuffer(_kAdvectScalar, "_DebugBuffer", _debugBuffer);
+        Dispatch(_kAdvectScalar);
+        Swap(ref _turbulenceA, ref _turbulenceB);
+    }
+
+    /// <summary>Enforce incompressibility via divergence compute and Jacobi solve.</summary>
     private void ProjectVelocity()
     {
         fluidCompute.SetTexture(_kDivergence, "_VelocityField", _velocityA);
@@ -683,6 +802,9 @@ public class Weather2D : MonoBehaviour
         Dispatch(_kSubtract);
     }
 
+    /// <summary>
+    /// Execute condensation/evaporation/precipitation with thermal feedback.
+    /// </summary>
     private void RunMicrophysics(float dt)
     {
         float condensation = condensationRate;
@@ -708,13 +830,22 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_EvaporationRate", evaporation);
         fluidCompute.SetFloat("_PrecipitationRate", precipitation);
         fluidCompute.SetFloat("_LatentHeatBuoyancy", latentHeat);
+        fluidCompute.SetFloat("_TemperatureSaturationFactor", temperatureSaturationFactor);
+        fluidCompute.SetFloat("_LatentHeatTemperatureGain", latentHeatTemperatureGain);
+        fluidCompute.SetFloat("_EvaporationCoolingFactor", evaporationCoolingFactor);
+        fluidCompute.SetFloat("_TurbulencePrecipFactor", turbulencePrecipitationFactor);
+        fluidCompute.SetFloat("_TemperatureDecay", temperatureDecay);
+        fluidCompute.SetFloat("_TurbulenceDecay", turbulenceDecay);
         fluidCompute.SetTexture(_kMicrophysics, "_MicroHumidity", _humidityA);
         fluidCompute.SetTexture(_kMicrophysics, "_MicroCloud", _cloudA);
         fluidCompute.SetTexture(_kMicrophysics, "_MicroVelocity", _velocityA);
+        fluidCompute.SetTexture(_kMicrophysics, "_MicroTemperature", _temperatureA);
+        fluidCompute.SetTexture(_kMicrophysics, "_MicroTurbulence", _turbulenceA);
         fluidCompute.SetTexture(_kMicrophysics, "_PrecipitationTex", _precipitation);
         Dispatch(_kMicrophysics);
     }
 
+    /// <summary>Fade velocity near the top of the domain to keep clouds visible.</summary>
     private void ApplyUpperDamping()
     {
         if (upperDampingStrength <= 0f || _kUpperDamping < 0)
@@ -731,6 +862,7 @@ public class Weather2D : MonoBehaviour
         Dispatch(_kUpperDamping);
     }
 
+    /// <summary>Read back averages for logging/precipitation feedback.</summary>
     private void GatherStatsAndUpdatePrecipitation(float dt)
     {
         if (_statsData == null || _statsData.Length < 12)
@@ -754,6 +886,7 @@ public class Weather2D : MonoBehaviour
         UpdatePrecipitationEffects(_latestAvgPrecip, precipSum, dt);
     }
 
+    /// <summary>Drive the optional particle system and re-injection feedback loop.</summary>
     private void UpdatePrecipitationEffects(float avgPrecip, float precipSum, float dt)
     {
         if (precipitationSystem != null)
@@ -778,6 +911,7 @@ public class Weather2D : MonoBehaviour
         Dispatch(_kClear);
     }
 
+    /// <summary>Blit humidity/cloud buffers into the display texture.</summary>
     private void Visualize()
     {
         if (_display == null)
@@ -886,6 +1020,7 @@ public class Weather2D : MonoBehaviour
         _debugBuffer.SetData(zeros);
     }
 
+    /// <summary>Clear all simulation buffers to a neutral state.</summary>
     public void ResetSimulation()
     {
         if (!_initialized && !Initialize())
@@ -897,6 +1032,10 @@ public class Weather2D : MonoBehaviour
         ClearRenderTexture(_humidityB, Color.clear);
         ClearRenderTexture(_cloudA, Color.clear);
         ClearRenderTexture(_cloudB, Color.clear);
+        ClearRenderTexture(_temperatureA, Color.clear);
+        ClearRenderTexture(_temperatureB, Color.clear);
+        ClearRenderTexture(_turbulenceA, Color.clear);
+        ClearRenderTexture(_turbulenceB, Color.clear);
         ClearRenderTexture(_pressureA, Color.clear);
         ClearRenderTexture(_pressureB, Color.clear);
         ClearRenderTexture(_divergence, Color.clear);
@@ -915,6 +1054,7 @@ public class Weather2D : MonoBehaviour
         ClearScriptedBursts();
     }
 
+    /// <summary>Populate default demo presets if none are serialized.</summary>
     private void EnsureDemoScenarios()
     {
         if (demoScenarios != null && demoScenarios.Length > 0)
@@ -1042,68 +1182,73 @@ public class Weather2D : MonoBehaviour
             new DemoScenario
             {
                 name = "Rocket Rain",
-                densityDissipation = 0.9998f,
-                velocityDissipation = 0.997f,
+                densityDissipation = 0.9994f,
+                velocityDissipation = 0.9965f,
                 sourceRadius = 0.18f,
-                sourceDensity = 24f,
-                sourceHeight = 0.1f,
+                sourceDensity = 28f,
+                sourceHeight = 0.12f,
                 sourceVelocity = new Vector2(0f, 2.2f),
-                timeScale = 0.45f,
+                timeScale = 0.6f,
                 disableBaseSource = true,
                 initialBursts = new[]
                 {
                     new Burst
                     {
-                        position = new Vector2(0.5f, 0.08f),
-                        radius = 0.28f,
-                        density = 42f,
-                        velocity = new Vector2(0f, 2.6f)
-                    },
-                    new Burst
-                    {
-                        position = new Vector2(0.36f, 0.16f),
+                        position = new Vector2(0.35f, 0.18f),
                         radius = 0.16f,
-                        density = 28f,
-                        velocity = new Vector2(0.6f, 2.4f)
+                        density = 35f,
+                        velocity = new Vector2(0.8f, 2.8f)
                     },
                     new Burst
                     {
-                        position = new Vector2(0.64f, 0.16f),
+                        position = new Vector2(0.65f, 0.18f),
                         radius = 0.16f,
-                        density = 28f,
-                        velocity = new Vector2(-0.6f, 2.4f)
+                        density = 35f,
+                        velocity = new Vector2(-0.8f, 2.8f)
                     },
                     new Burst
                     {
-                        position = new Vector2(0.5f, 0.32f),
-                        radius = 0.14f,
-                        density = 24f,
-                        velocity = new Vector2(0f, 2.2f)
+                        position = new Vector2(0.5f, 0.24f),
+                        radius = 0.12f,
+                        density = 30f,
+                        velocity = new Vector2(0f, 2.4f)
                     }
                 },
                 loopBursts = null,
                 loopInterval = 0f,
-                rocketDelay = 3f,
-                rocketBurstDuration = 0.32f,
-                rocketBurstInterval = 0.16f,
+                rocketDelay = 4f,
+                rocketBurstDuration = 0.2f,
+                rocketBurstInterval = 0.12f,
                 rocketBursts = new[]
                 {
-                    new Burst { position = new Vector2(0.5f, 0.08f), radius = 0.11f, density = 48f, velocity = new Vector2(0f, 3.2f) },
-                    new Burst { position = new Vector2(0.5f, 0.22f), radius = 0.09f, density = 42f, velocity = new Vector2(0f, 3.4f) },
-                    new Burst { position = new Vector2(0.5f, 0.36f), radius = 0.08f, density = 38f, velocity = new Vector2(0f, 3.5f) },
-                    new Burst { position = new Vector2(0.5f, 0.5f), radius = 0.07f, density = 30f, velocity = new Vector2(0f, 3.6f) },
-                    new Burst { position = new Vector2(0.5f, 0.66f), radius = 0.07f, density = 26f, velocity = new Vector2(0f, 3.7f) }
+                    new Burst { position = new Vector2(0.5f, 0.08f), radius = 0.09f, density = 0f, velocity = Vector2.zero },
+                    new Burst { position = new Vector2(0.5f, 0.22f), radius = 0.07f, density = 0f, velocity = Vector2.zero },
+                    new Burst { position = new Vector2(0.5f, 0.36f), radius = 0.06f, density = 0f, velocity = Vector2.zero },
+                    new Burst { position = new Vector2(0.5f, 0.5f), radius = 0.05f, density = 0f, velocity = Vector2.zero },
+                    new Burst { position = new Vector2(0.5f, 0.66f), radius = 0.05f, density = 0f, velocity = Vector2.zero }
                 },
                 disableBaseSourceAfterRocket = true,
-                rocketBoostDuration = 2.5f,
-                rocketCondensationMultiplier = 2.2f,
-                rocketPrecipitationMultiplier = 3f,
+                rocketBoostDuration = 1.2f,
+                rocketCondensationMultiplier = 3.5f,
+                rocketPrecipitationMultiplier = 5.5f,
                 disablePrecipitationFeedback = true,
-                precipitationFeedbackOverride = 0f
+                precipitationFeedbackOverride = 0f,
+                triggerRocketExplosion = true,
+                rocketExplosion = new Burst
+                {
+                    position = new Vector2(0.5f, 0.74f),
+                    radius = 0.06f,
+                    density = 0f,
+                    velocity = new Vector2(0f, 0.8f),
+                    heat = 12f,
+                    turbulence = 2.5f
+                },
+                rocketExplosionDuration = 0.2f
             }
         };
     }
 
+    /// <summary>Reset the sim and apply the selected demo configuration.</summary>
     public void ApplyDemo(int index)
     {
         if (demoScenarios == null || demoScenarios.Length == 0)

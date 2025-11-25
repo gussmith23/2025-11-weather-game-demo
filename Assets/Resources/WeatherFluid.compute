@@ -45,9 +45,16 @@ cbuffer SimParams
     float _CloudBlend;
     float _CloudGain;
     float _SourceMapBlend;
-    float3 _UnusedPad;
     float _UpperDampingStart;
     float _UpperDampingStrength;
+    float _TemperatureSaturationFactor;
+    float _LatentHeatTemperatureGain;
+    float _EvaporationCoolingFactor;
+    float _TurbulencePrecipFactor;
+    float _TemperatureDecay;
+    float _TurbulenceDecay;
+    float _SourceHeat;
+    float _SourceTurbulence;
     float2 _UnusedPad2;
 };
 
@@ -61,6 +68,8 @@ float2 clampUV(float2 uv)
 // Source injection
 RWTexture2D<float2> _Velocity;
 RWTexture2D<float> _Humidity;
+RWTexture2D<float> _Temperature;
+RWTexture2D<float> _Turbulence;
 RWStructuredBuffer<float> _DebugBuffer;
 Texture2D<float> _SurfaceMoistureTex;
 
@@ -90,6 +99,14 @@ void InjectSource(uint3 dispatchThreadID : SV_DispatchThreadID)
     float humidity = _Humidity[coord];
     humidity += _SourceDensity * falloff;
     _Humidity[coord] = humidity;
+
+    float temp = _Temperature[coord];
+    temp += _SourceHeat * falloff;
+    _Temperature[coord] = temp;
+
+    float turb = _Turbulence[coord];
+    turb += _SourceTurbulence * falloff;
+    _Turbulence[coord] = turb;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +290,8 @@ void Visualize(uint3 dispatchThreadID : SV_DispatchThreadID)
 RWTexture2D<float> _MicroHumidity;
 RWTexture2D<float> _MicroCloud;
 RWTexture2D<float2> _MicroVelocity;
+RWTexture2D<float> _MicroTemperature;
+RWTexture2D<float> _MicroTurbulence;
 RWTexture2D<float> _PrecipitationTex;
 
 [numthreads(THREADS_X, THREADS_Y, 1)]
@@ -285,27 +304,41 @@ void MoistureMicrophysics(uint3 dispatchThreadID : SV_DispatchThreadID)
     float humidity = max(0.0, _MicroHumidity[coord]);
     float cloud = max(0.0, _MicroCloud[coord]);
     float2 velocity = _MicroVelocity[coord];
+    float temperature = _MicroTemperature[coord];
+    float turbulence = _MicroTurbulence[coord];
 
-    float supersaturation = max(0.0, humidity - _SaturationThreshold);
+    float dynamicSaturation = max(0.01, _SaturationThreshold + temperature * _TemperatureSaturationFactor);
+    float supersaturation = max(0.0, humidity - dynamicSaturation);
     float condense = min(humidity, supersaturation * _CondensationRate * _DeltaTime);
     humidity -= condense;
     cloud += condense;
+    temperature += condense * _LatentHeatTemperatureGain;
+    turbulence += condense * 0.5;
 
-    float humidityDeficit = max(0.0, _SaturationThreshold - humidity);
+    float humidityDeficit = max(0.0, dynamicSaturation - humidity);
     float evaporate = min(cloud, humidityDeficit * _EvaporationRate * _DeltaTime);
     cloud -= evaporate;
     humidity += evaporate;
+    temperature -= evaporate * _EvaporationCoolingFactor;
 
-    float precipitation = min(cloud, cloud * _PrecipitationRate * _DeltaTime);
+    float turbulenceBoost = 1.0 + saturate(turbulence) * _TurbulencePrecipFactor;
+    float precipitation = min(cloud, cloud * _PrecipitationRate * turbulenceBoost * _DeltaTime);
     cloud -= precipitation;
     _PrecipitationTex[coord] = precipitation;
 
     float buoyancy = condense * _LatentHeatBuoyancy;
     velocity.y += buoyancy;
 
+    float tempDecay = saturate(1.0 - _TemperatureDecay * _DeltaTime);
+    float turbDecay = saturate(1.0 - _TurbulenceDecay * _DeltaTime);
+    temperature *= tempDecay;
+    turbulence *= turbDecay;
+
     _MicroHumidity[coord] = max(0.0, humidity);
     _MicroCloud[coord] = max(0.0, cloud);
     _MicroVelocity[coord] = velocity;
+    _MicroTemperature[coord] = temperature;
+    _MicroTurbulence[coord] = max(0.0, turbulence);
 }
 
 // ---------------------------------------------------------------------------

@@ -134,6 +134,12 @@ public class RocketController : MonoBehaviour
             }
         }
 
+        if (scenario.triggerRocketExplosion && scenario.rocketExplosionDuration > 0f)
+        {
+            float explosionDuration = Mathf.Max(0.01f, scenario.rocketExplosionDuration);
+            weather.TriggerRocketBurst(scenario.rocketExplosion, 0f, explosionDuration);
+        }
+
         if (scenario.disableBaseSourceAfterRocket)
         {
             weather.SetBaseSourceActive(false);
