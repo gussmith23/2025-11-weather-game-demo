@@ -51,6 +51,10 @@ public class Weather2D : MonoBehaviour
     [Header("Display")]
     public RawImage target;
     public FilterMode filter = FilterMode.Bilinear;
+    [Range(0.5f, 20f)]
+    public float quadSize = 5f;
+    [Range(0.5f, 3f)]
+    public float quadAspect = 1f;
     public Color lowColor = new Color(0.04f, 0.05f, 0.1f, 1f);
     public Color highColor = new Color(1f, 0.95f, 0.85f, 1f);
     [Range(0.1f, 15f)]
@@ -158,6 +162,8 @@ public class Weather2D : MonoBehaviour
     private Vector2Int _dispatch;
     private Material _quadMaterial;
     private Transform _quadTransform;
+    private float _defaultQuadSize;
+    private float _defaultQuadAspect;
     private int _activeDemo;
     private long _stepsCompleted;
     private float _debugTimer;
@@ -241,6 +247,8 @@ public class Weather2D : MonoBehaviour
         public bool triggerRocketExplosion;
         public Burst rocketExplosion;
         public float rocketExplosionDuration;
+        public float quadSize;
+        public float quadAspect;
     }
 
     /// <summary>
@@ -285,6 +293,8 @@ public class Weather2D : MonoBehaviour
         _kMicrophysics = fluidCompute.FindKernel("MoistureMicrophysics");
         _kUpperDamping = fluidCompute.FindKernel("ApplyUpperDamping");
 
+        _defaultQuadSize = quadSize;
+        _defaultQuadAspect = quadAspect;
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
@@ -439,8 +449,8 @@ public class Weather2D : MonoBehaviour
         {
             var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
             quad.transform.SetParent(transform, false);
-            quad.transform.localScale = Vector3.one * 5f;
             _quadTransform = quad.transform;
+            UpdateQuadScale();
             var collider = quad.GetComponent<Collider>();
             if (collider != null)
             {
@@ -460,6 +470,17 @@ public class Weather2D : MonoBehaviour
         {
             target.texture = _display;
         }
+    }
+
+    private void UpdateQuadScale()
+    {
+        if (_quadTransform == null)
+        {
+            return;
+        }
+        float size = Mathf.Max(0.01f, quadSize);
+        float aspect = Mathf.Max(0.01f, quadAspect);
+        _quadTransform.localScale = new Vector3(size * aspect, size, 1f);
     }
 
     /// <summary>
@@ -1194,6 +1215,8 @@ public class Weather2D : MonoBehaviour
                 sourceVelocity = new Vector2(0f, 2.2f),
                 timeScale = 0.6f,
                 disableBaseSource = true,
+                quadSize = 7.5f,
+                quadAspect = 16f / 9f,
                 initialBursts = new[]
                 {
                     new Burst
@@ -1307,6 +1330,9 @@ public class Weather2D : MonoBehaviour
         _loopTimer = Mathf.Max(0f, scenario.loopInterval);
         _useBaseSource = !scenario.disableBaseSource;
         _scenarioTimeScale = scenario.timeScale > 0f ? scenario.timeScale : 1f;
+        quadSize = scenario.quadSize > 0f ? scenario.quadSize : _defaultQuadSize;
+        quadAspect = scenario.quadAspect > 0f ? scenario.quadAspect : _defaultQuadAspect;
+        UpdateQuadScale();
         ApplyPrecipitationFeedbackOverride(scenario);
 
         ClearScriptedBursts();
