@@ -8,6 +8,8 @@ public class ParameterSweepManager : MonoBehaviour
 {
     [Tooltip("Template Weather2D to clone. If null, the first Weather2D in the scene is used.")]
     public Weather2D template;
+    [Tooltip("If false, only a single Weather2D instance is shown and no sweep clones are created.")]
+    public bool enableSweep = false;
     [Tooltip("Number of columns in the comparison grid.")]
     public int columns = 2;
     [Tooltip("Number of rows in the comparison grid.")]
@@ -27,6 +29,13 @@ public class ParameterSweepManager : MonoBehaviour
         if (template == null)
         {
             Debug.LogWarning("ParameterSweepManager could not find a Weather2D template.");
+            return;
+        }
+
+        if (!enableSweep)
+        {
+            template.transform.SetParent(transform, worldPositionStays: true);
+            template.transform.position = transform.position;
             return;
         }
 
