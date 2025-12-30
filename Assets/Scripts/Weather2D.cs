@@ -157,6 +157,7 @@ public class Weather2D : MonoBehaviour
 
     private Vector2Int _dispatch;
     private Material _quadMaterial;
+    private Transform _quadTransform;
     private int _activeDemo;
     private long _stepsCompleted;
     private float _debugTimer;
@@ -439,6 +440,7 @@ public class Weather2D : MonoBehaviour
             var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
             quad.transform.SetParent(transform, false);
             quad.transform.localScale = Vector3.one * 5f;
+            _quadTransform = quad.transform;
             var collider = quad.GetComponent<Collider>();
             if (collider != null)
             {
@@ -961,11 +963,45 @@ public class Weather2D : MonoBehaviour
         if (target != null)
         {
             RectTransform rect = target.rectTransform;
-            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(rect, screenPos, null, out Vector2 local))
+            Camera uiCamera = null;
+            Canvas canvas = target.canvas;
+            if (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+            {
+                uiCamera = canvas.worldCamera;
+            }
+            if (uiCamera == null)
+            {
+                uiCamera = Camera.main;
+            }
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(rect, screenPos, uiCamera, out Vector2 local))
             {
                 Rect r = rect.rect;
                 float u = Mathf.InverseLerp(r.xMin, r.xMax, local.x);
                 float v = Mathf.InverseLerp(r.yMin, r.yMax, local.y);
+                if (u >= 0f && u <= 1f && v >= 0f && v <= 1f)
+                {
+                    uv = new Vector2(u, v);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (_quadTransform != null)
+        {
+            Camera cam = Camera.main;
+            if (cam == null)
+            {
+                return false;
+            }
+            Ray ray = cam.ScreenPointToRay(screenPos);
+            Plane plane = new Plane(_quadTransform.forward, _quadTransform.position);
+            if (plane.Raycast(ray, out float enter))
+            {
+                Vector3 worldPoint = ray.GetPoint(enter);
+                Vector3 localPoint = _quadTransform.InverseTransformPoint(worldPoint);
+                float u = localPoint.x + 0.5f;
+                float v = localPoint.y + 0.5f;
                 if (u >= 0f && u <= 1f && v >= 0f && v <= 1f)
                 {
                     uv = new Vector2(u, v);
