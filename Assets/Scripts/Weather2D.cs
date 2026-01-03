@@ -16,9 +16,9 @@ public class Weather2D : MonoBehaviour
 {
     [Header("Simulation Size")]
     [FormerlySerializedAs("resolution")]
-    [Range(64, 512)]
+    [Range(64, 1024)]
     public int simWidth = 256;
-    [Range(64, 512)]
+    [Range(64, 1024)]
     public int simHeight = 256;
     [Range(1, 8)]
     public int substeps = 4;
@@ -51,6 +51,11 @@ public class Weather2D : MonoBehaviour
     public float mouseRadius = 0.04f;
     [Range(0.01f, 1f)]
     public float loopBurstDuration = 0.2f;
+
+    [Header("Background Wind")]
+    public Vector2 backgroundWind = Vector2.zero;
+    [Range(0f, 10f)]
+    public float backgroundWindStrength = 0f;
 
     [Header("Display")]
     public RawImage target;
@@ -160,11 +165,14 @@ public class Weather2D : MonoBehaviour
     private int _kStats;
     private int _kMicrophysics;
     private int _kUpperDamping;
+    private int _kBackgroundWind;
 
     private Vector2Int _dispatch;
     private Material _quadMaterial;
     private Transform _quadTransform;
     private float _defaultQuadSize;
+    private int _defaultSimWidth;
+    private int _defaultSimHeight;
     private int _activeDemo;
     private long _stepsCompleted;
     private float _debugTimer;
@@ -249,6 +257,8 @@ public class Weather2D : MonoBehaviour
         public Burst rocketExplosion;
         public float rocketExplosionDuration;
         public float quadSize;
+        public int simWidth;
+        public int simHeight;
     }
 
     /// <summary>
@@ -292,8 +302,11 @@ public class Weather2D : MonoBehaviour
         _kStats = fluidCompute.FindKernel("ComputeStats");
         _kMicrophysics = fluidCompute.FindKernel("MoistureMicrophysics");
         _kUpperDamping = fluidCompute.FindKernel("ApplyUpperDamping");
+        _kBackgroundWind = fluidCompute.FindKernel("ApplyBackgroundWind");
 
         _defaultQuadSize = quadSize;
+        _defaultSimWidth = simWidth;
+        _defaultSimHeight = simHeight;
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
@@ -326,22 +339,7 @@ public class Weather2D : MonoBehaviour
 
     private void OnDestroy()
     {
-        Release(ref _velocityA);
-        Release(ref _velocityB);
-        Release(ref _humidityA);
-        Release(ref _humidityB);
-        Release(ref _cloudA);
-        Release(ref _cloudB);
-        Release(ref _temperatureA);
-        Release(ref _temperatureB);
-        Release(ref _turbulenceA);
-        Release(ref _turbulenceB);
-        Release(ref _pressureA);
-        Release(ref _pressureB);
-        Release(ref _divergence);
-        Release(ref _display);
-        Release(ref _precipitation);
-        ReleaseDebugBuffer();
+        ReleaseTextures();
         _initialized = false;
     }
 
@@ -382,6 +380,36 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetInts("_SimSize", simWidth, simHeight);
         fluidCompute.SetFloats("_InvSimSize", 1f / simWidth, 1f / simHeight);
         ConfigureSurfaceMap();
+    }
+
+    private void ReleaseTextures()
+    {
+        Release(ref _velocityA);
+        Release(ref _velocityB);
+        Release(ref _humidityA);
+        Release(ref _humidityB);
+        Release(ref _cloudA);
+        Release(ref _cloudB);
+        Release(ref _temperatureA);
+        Release(ref _temperatureB);
+        Release(ref _turbulenceA);
+        Release(ref _turbulenceB);
+        Release(ref _pressureA);
+        Release(ref _pressureB);
+        Release(ref _divergence);
+        Release(ref _display);
+        Release(ref _precipitation);
+        ReleaseDebugBuffer();
+    }
+
+    private void RebuildSimulation()
+    {
+        ReleaseTextures();
+        AllocateTextures();
+        if (target != null)
+        {
+            target.texture = _display;
+        }
     }
 
     private RenderTexture CreateVectorRT()
@@ -478,7 +506,8 @@ public class Weather2D : MonoBehaviour
             return;
         }
         float size = Mathf.Max(0.01f, quadSize);
-        _quadTransform.localScale = new Vector3(size, size, 1f);
+        float aspect = simHeight > 0 ? (float)simWidth / simHeight : 1f;
+        _quadTransform.localScale = new Vector3(size * aspect, size, 1f);
     }
 
     /// <summary>
@@ -546,6 +575,7 @@ public class Weather2D : MonoBehaviour
             }
         }
 
+        ApplyBackgroundWind();
         AdvectVelocity();
         AdvectHumidity();
         AdvectCloud();
@@ -745,6 +775,18 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetBuffer(_kAdvectVelocity, "_DebugBuffer", _debugBuffer);
         Dispatch(_kAdvectVelocity);
         Swap(ref _velocityA, ref _velocityB);
+    }
+
+    private void ApplyBackgroundWind()
+    {
+        if (backgroundWindStrength <= 0.0001f)
+        {
+            return;
+        }
+        fluidCompute.SetVector("_BackgroundWind", new Vector4(backgroundWind.x, backgroundWind.y, 0f, 0f));
+        fluidCompute.SetFloat("_BackgroundWindStrength", Mathf.Max(0f, backgroundWindStrength));
+        fluidCompute.SetTexture(_kBackgroundWind, "_BackgroundWindVelocity", _velocityA);
+        Dispatch(_kBackgroundWind);
     }
 
     /// <summary>Advect the humidity scalar.</summary>
@@ -1119,6 +1161,23 @@ public class Weather2D : MonoBehaviour
         {
             new DemoScenario
             {
+                name = "Sandbox",
+                densityDissipation = 0.999f,
+                velocityDissipation = 0.995f,
+                sourceRadius = 0.08f,
+                sourceDensity = 4f,
+                sourceHeight = 0.05f,
+                sourceVelocity = new Vector2(0f, 1.5f),
+                timeScale = 1f,
+                disableBaseSource = true,
+                quadSize = 7.5f,
+                simWidth = 640,
+                simHeight = 256,
+                loopInterval = 0f,
+                precipitationFeedbackOverride = -1f
+            },
+            new DemoScenario
+            {
                 name = "Perpetual Plume",
                 densityDissipation = 0.9997f,
                 velocityDissipation = 0.996f,
@@ -1317,6 +1376,12 @@ public class Weather2D : MonoBehaviour
         _activeDemo = clamped;
         DemoScenario scenario = demoScenarios[clamped];
 
+        int nextSimWidth = scenario.simWidth > 0 ? scenario.simWidth : _defaultSimWidth;
+        int nextSimHeight = scenario.simHeight > 0 ? scenario.simHeight : _defaultSimHeight;
+        bool rebuildSim = nextSimWidth != simWidth || nextSimHeight != simHeight;
+        simWidth = nextSimWidth;
+        simHeight = nextSimHeight;
+
         densityDissipation = scenario.densityDissipation;
         velocityDissipation = scenario.velocityDissipation;
         sourceRadius = scenario.sourceRadius;
@@ -1332,6 +1397,10 @@ public class Weather2D : MonoBehaviour
         ApplyPrecipitationFeedbackOverride(scenario);
 
         ClearScriptedBursts();
+        if (rebuildSim)
+        {
+            RebuildSimulation();
+        }
         ResetSimulation();
         if (scenario.initialBursts != null)
         {

@@ -9,6 +9,7 @@
 #pragma kernel MoistureMicrophysics
 #pragma kernel ComputeStats
 #pragma kernel ApplyUpperDamping
+#pragma kernel ApplyBackgroundWind
 
 // 8x8 threads cover 64 pixels per group
 #define THREADS_X 8
@@ -55,7 +56,9 @@ cbuffer SimParams
     float _TurbulenceDecay;
     float _SourceHeat;
     float _SourceTurbulence;
-    float2 _UnusedPad2;
+    float2 _BackgroundWind;
+    float _BackgroundWindStrength;
+    float _UnusedPad2;
 };
 
 float2 clampUV(float2 uv)
@@ -420,4 +423,23 @@ void ApplyUpperDamping(uint3 dispatchThreadID : SV_DispatchThreadID)
     float damp = lerp(1.0, 1.0 - saturate(_UpperDampingStrength), t);
     float2 vel = _VelocityDamp[coord];
     _VelocityDamp[coord] = vel * damp;
+}
+
+// ---------------------------------------------------------------------------
+// Background wind relaxation
+RWTexture2D<float2> _BackgroundWindVelocity;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplyBackgroundWind(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float blend = saturate(_BackgroundWindStrength * _DeltaTime);
+    if (blend <= 0.0)
+        return;
+
+    float2 vel = _BackgroundWindVelocity[coord];
+    _BackgroundWindVelocity[coord] = lerp(vel, _BackgroundWind, blend);
 }

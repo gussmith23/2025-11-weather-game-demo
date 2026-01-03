@@ -109,3 +109,12 @@
 
 ## 2025-11-16 – Make simulation size rectangular
 - Replaced the single `resolution` setting with `simWidth`/`simHeight`, allocating rectangular render textures, dispatch sizes, and compute shader parameters accordingly. Updated Edit Mode tests to run on a non-square grid to validate the new path.
+
+## 2025-11-16 – Add wide sandbox demo
+- Added a "Sandbox" demo preset that disables the base source and sets a wide simulation grid (2.5x width) so you can experiment with live parameters in a blank, extended domain.
+
+## 2025-11-16 – Sync quad scale to sim aspect
+- Updated the auto-quad display scale to derive its aspect from `simWidth`/`simHeight`, so wide simulations render wide without manual aspect overrides.
+
+## 2025-11-16 – Add background wind relaxation
+- Added a background wind target + strength that gently relaxes the velocity field toward a constant wind vector each step, providing a steady domain-wide flow without runaway acceleration.
