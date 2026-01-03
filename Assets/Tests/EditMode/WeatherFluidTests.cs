@@ -3,7 +3,8 @@ using UnityEngine;
 
 public class WeatherFluidTests
 {
-    private const int Resolution = 128;
+    private const int SimWidth = 160;
+    private const int SimHeight = 96;
     private const bool DumpStepStats = false;
     private ComputeShader shader;
     private RenderTexture velocityA;
@@ -73,8 +74,8 @@ public class WeatherFluidTests
         kMicrophysics = shader.FindKernel("MoistureMicrophysics");
 
         dispatch = new Vector2Int(
-            Mathf.CeilToInt(Resolution / 8f),
-            Mathf.CeilToInt(Resolution / 8f));
+            Mathf.CeilToInt(SimWidth / 8f),
+            Mathf.CeilToInt(SimHeight / 8f));
 
         velocityA = CreateVectorRT();
         velocityB = CreateVectorRT();
@@ -106,8 +107,8 @@ public class WeatherFluidTests
         ClearRenderTexture(precipitation);
         statsBuffer = new ComputeBuffer(12, sizeof(float));
 
-        shader.SetInts("_SimSize", Resolution, Resolution);
-        shader.SetFloats("_InvSimSize", 1f / Resolution, 1f / Resolution);
+        shader.SetInts("_SimSize", SimWidth, SimHeight);
+        shader.SetFloats("_InvSimSize", 1f / SimWidth, 1f / SimHeight);
         ConfigureMicrophysicsDefaults();
         shader.SetTexture(kInject, "_SurfaceMoistureTex", Texture2D.whiteTexture);
     }
@@ -470,7 +471,7 @@ public class WeatherFluidTests
 
     private RenderTexture CreateRT(RenderTextureFormat format)
     {
-        var rt = new RenderTexture(Resolution, Resolution, 0, format)
+        var rt = new RenderTexture(SimWidth, SimHeight, 0, format)
         {
             enableRandomWrite = true,
             wrapMode = TextureWrapMode.Clamp,

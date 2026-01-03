@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
 using UnityEngine.InputSystem;
 #endif
@@ -13,9 +14,12 @@ using UnityEngine.InputSystem;
 /// </summary>
 public class Weather2D : MonoBehaviour
 {
-    [Header("Resolution")]
+    [Header("Simulation Size")]
+    [FormerlySerializedAs("resolution")]
     [Range(64, 512)]
-    public int resolution = 256;
+    public int simWidth = 256;
+    [Range(64, 512)]
+    public int simHeight = 256;
     [Range(1, 8)]
     public int substeps = 4;
     [Range(0.001f, 0.05f)]
@@ -53,8 +57,6 @@ public class Weather2D : MonoBehaviour
     public FilterMode filter = FilterMode.Bilinear;
     [Range(0.5f, 20f)]
     public float quadSize = 5f;
-    [Range(0.5f, 3f)]
-    public float quadAspect = 1f;
     public Color lowColor = new Color(0.04f, 0.05f, 0.1f, 1f);
     public Color highColor = new Color(1f, 0.95f, 0.85f, 1f);
     [Range(0.1f, 15f)]
@@ -163,7 +165,6 @@ public class Weather2D : MonoBehaviour
     private Material _quadMaterial;
     private Transform _quadTransform;
     private float _defaultQuadSize;
-    private float _defaultQuadAspect;
     private int _activeDemo;
     private long _stepsCompleted;
     private float _debugTimer;
@@ -248,7 +249,6 @@ public class Weather2D : MonoBehaviour
         public Burst rocketExplosion;
         public float rocketExplosionDuration;
         public float quadSize;
-        public float quadAspect;
     }
 
     /// <summary>
@@ -294,7 +294,6 @@ public class Weather2D : MonoBehaviour
         _kUpperDamping = fluidCompute.FindKernel("ApplyUpperDamping");
 
         _defaultQuadSize = quadSize;
-        _defaultQuadAspect = quadAspect;
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
@@ -359,8 +358,8 @@ public class Weather2D : MonoBehaviour
     private void AllocateTextures()
     {
         _dispatch = new Vector2Int(
-            Mathf.CeilToInt(resolution / 8f),
-            Mathf.CeilToInt(resolution / 8f));
+            Mathf.CeilToInt(simWidth / 8f),
+            Mathf.CeilToInt(simHeight / 8f));
 
         _velocityA = CreateVectorRT();
         _velocityB = CreateVectorRT();
@@ -380,8 +379,8 @@ public class Weather2D : MonoBehaviour
         CreateDebugBuffer();
         _statsData = new float[12];
 
-        fluidCompute.SetInts("_SimSize", resolution, resolution);
-        fluidCompute.SetFloats("_InvSimSize", 1f / resolution, 1f / resolution);
+        fluidCompute.SetInts("_SimSize", simWidth, simHeight);
+        fluidCompute.SetFloats("_InvSimSize", 1f / simWidth, 1f / simHeight);
         ConfigureSurfaceMap();
     }
 
@@ -402,7 +401,7 @@ public class Weather2D : MonoBehaviour
 
     private RenderTexture CreateRT(RenderTextureFormat format)
     {
-        var rt = new RenderTexture(resolution, resolution, 0, format)
+        var rt = new RenderTexture(simWidth, simHeight, 0, format)
         {
             enableRandomWrite = true,
             wrapMode = TextureWrapMode.Clamp,
@@ -479,8 +478,7 @@ public class Weather2D : MonoBehaviour
             return;
         }
         float size = Mathf.Max(0.01f, quadSize);
-        float aspect = Mathf.Max(0.01f, quadAspect);
-        _quadTransform.localScale = new Vector3(size * aspect, size, 1f);
+        _quadTransform.localScale = new Vector3(size, size, 1f);
     }
 
     /// <summary>
@@ -1216,7 +1214,6 @@ public class Weather2D : MonoBehaviour
                 timeScale = 0.6f,
                 disableBaseSource = true,
                 quadSize = 7.5f,
-                quadAspect = 16f / 9f,
                 initialBursts = new[]
                 {
                     new Burst
@@ -1331,7 +1328,6 @@ public class Weather2D : MonoBehaviour
         _useBaseSource = !scenario.disableBaseSource;
         _scenarioTimeScale = scenario.timeScale > 0f ? scenario.timeScale : 1f;
         quadSize = scenario.quadSize > 0f ? scenario.quadSize : _defaultQuadSize;
-        quadAspect = scenario.quadAspect > 0f ? scenario.quadAspect : _defaultQuadAspect;
         UpdateQuadScale();
         ApplyPrecipitationFeedbackOverride(scenario);
 

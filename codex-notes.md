@@ -103,3 +103,9 @@
 - Implemented scripted rocket support: added burst queues, public injection APIs, and exposure of live stats; created RocketController and wired it into SampleScene; expanded DemoScenario with rocket metadata and shipped a Rocket Rain preset plus GUI hook.
 - Added runtime asmdef + test reference to pull in Weather2D, wrote the Weather2DRocketTests integration fixture, and extended WeatherFluidTests with RocketStyleColumn coverage. All Edit Mode tests pass via batch mode.
 - Iterated on the demo per user feedback: Cloud Merger visible again, rocket bursts slow enough, rocket effect now meaningful thanks to the boost system. Documented behavior/testing philosophy here for future agents.
+
+## 2025-11-16 – Remove quadAspect display scaling
+- Dropped `quadAspect` from `Weather2D` and demo scenarios so the quad display is always square unless driven by UI layout. This clears the way for making the simulation size itself configurable without relying on stretch scaling.
+
+## 2025-11-16 – Make simulation size rectangular
+- Replaced the single `resolution` setting with `simWidth`/`simHeight`, allocating rectangular render textures, dispatch sizes, and compute shader parameters accordingly. Updated Edit Mode tests to run on a non-square grid to validate the new path.
