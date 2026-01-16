@@ -84,7 +84,10 @@ void InjectSource(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
 
     float2 uv = (float2(coord) + 0.5) * _InvSimSize;
-    float dist = distance(uv, _SourceCenter);
+    float aspect = _SimSize.y > 0 ? (float)_SimSize.x / _SimSize.y : 1.0;
+    float2 delta = uv - _SourceCenter;
+    delta.x *= aspect;
+    float dist = length(delta);
     float falloff = saturate(1.0 - smoothstep(_SourceRadius - _SourceFeather, _SourceRadius, dist));
     if (_SourceMapBlend > 0.5)
     {

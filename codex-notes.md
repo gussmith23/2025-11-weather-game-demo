@@ -118,3 +118,6 @@
 
 ## 2025-11-16 – Add background wind relaxation
 - Added a background wind target + strength that gently relaxes the velocity field toward a constant wind vector each step, providing a steady domain-wide flow without runaway acceleration.
+
+## 2025-11-16 – Aspect-correct source radius
+- Adjusted source falloff to account for sim aspect ratio, keeping injection/brush circles visually circular in wide sims.
