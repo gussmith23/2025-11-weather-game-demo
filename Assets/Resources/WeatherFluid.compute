@@ -280,7 +280,8 @@ float4 _SkyTopColor;
 float4 _SkyBottomColor;
 float4 _GroundColor;
 float4 _CloudShadowColor;
-float _CloudShadowStrength;
+    float _CloudShadowStrength;
+    float _ShowHumidity;
 
 [numthreads(THREADS_X, THREADS_Y, 1)]
 void Visualize(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -292,7 +293,7 @@ void Visualize(uint3 dispatchThreadID : SV_DispatchThreadID)
     float2 uv = (float2(coord) + 0.5) * _InvSimSize;
     float humidity = _DensityRead.SampleLevel(linearClamp, uv, 0);
     float humidityIntensity = saturate(humidity * _DisplayGain);
-    humidityIntensity = pow(humidityIntensity, max(0.1, _DisplayGamma));
+    humidityIntensity = pow(humidityIntensity, max(0.1, _DisplayGamma)) * _ShowHumidity;
     float4 sky = lerp(_SkyBottomColor, _SkyTopColor, saturate(uv.y));
     float4 baseColor = lerp(_GroundColor, sky, saturate(uv.y * 1.2));
     baseColor = lerp(baseColor, _ColorHigh, humidityIntensity);

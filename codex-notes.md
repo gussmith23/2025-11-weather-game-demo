@@ -141,3 +141,6 @@
 - Updated `run-tests.sh` to omit `-quit` so Unity’s CLI test runner actually executes and writes `editmode-results.xml`. Marked the EditMode asmdef as `testAssemblies` to ensure discovery.
 - Tuned Thunderstorm demo parameters (thermo profile, convergence strength, and initial burst) and added microphysics overrides for that scenario.
 - Fixed edit-mode test warnings by using `DestroyImmediate` when releasing render textures outside play mode.
+
+## 2025-11-16 – Hide humidity in display + debug gizmo
+- Added a toggle to hide humidity from the main visualization, plus a humidity gizmo overlay (Scene view) that can be enabled for debugging without washing out the render.

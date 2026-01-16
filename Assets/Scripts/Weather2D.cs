@@ -76,6 +76,17 @@ public class Weather2D : MonoBehaviour
     public Color synopticGizmoColor = new Color(0.2f, 0.9f, 1f, 0.8f);
     public bool verboseSynopticGizmoReadback = false;
 
+    [Header("Humidity Debug")]
+    public bool showHumidityGizmos = false;
+    [Range(4, 64)]
+    public int humidityGizmoGrid = 16;
+    [Range(0.05f, 1f)]
+    public float humidityGizmoUpdateInterval = 0.2f;
+    [Range(0.01f, 2f)]
+    public float humidityGizmoScale = 0.25f;
+    public Color humidityLowColor = new Color(0.05f, 0.2f, 0.6f, 0.5f);
+    public Color humidityHighColor = new Color(0.9f, 0.9f, 1f, 0.8f);
+
     [Header("Thermo Profile")]
     public float baseTemperature = 0.4f;
     public float lapseRate = 0.8f;
@@ -102,6 +113,7 @@ public class Weather2D : MonoBehaviour
     public float quadSize = 5f;
     public Color lowColor = new Color(0.04f, 0.05f, 0.1f, 1f);
     public Color highColor = new Color(1f, 0.95f, 0.85f, 1f);
+    public bool showHumidityInDisplay = false;
     [Range(0.1f, 15f)]
     public float displayGain = 6f;
     [Range(0.2f, 2f)]
@@ -241,6 +253,11 @@ public class Weather2D : MonoBehaviour
     private float _nextSynopticReadbackTime;
     private bool _synopticReadbackPending;
     private bool _synopticReadbackUnsupportedLogged;
+    private float[] _humidityData;
+    private int _humidityWidth;
+    private int _humidityHeight;
+    private float _nextHumidityReadbackTime;
+    private bool _humidityReadbackPending;
     private int _activeDemo;
     private long _stepsCompleted;
     private float _debugTimer;
@@ -592,6 +609,52 @@ public class Weather2D : MonoBehaviour
         });
     }
 
+    private void MaybeRequestHumidityReadback()
+    {
+        if (!showHumidityGizmos || _humidityA == null || _humidityReadbackPending)
+        {
+            return;
+        }
+
+        if (!SystemInfo.supportsAsyncGPUReadback)
+        {
+            if (!_synopticReadbackUnsupportedLogged)
+            {
+                Debug.LogWarning("Humidity gizmos require AsyncGPUReadback support.", this);
+                _synopticReadbackUnsupportedLogged = true;
+            }
+            return;
+        }
+
+        float interval = Mathf.Max(0.01f, humidityGizmoUpdateInterval);
+        if (Time.time < _nextHumidityReadbackTime)
+        {
+            return;
+        }
+
+        _humidityReadbackPending = true;
+        _nextHumidityReadbackTime = Time.time + interval;
+        int width = _humidityA.width;
+        int height = _humidityA.height;
+        AsyncGPUReadback.Request(_humidityA, 0, request =>
+        {
+            _humidityReadbackPending = false;
+            if (request.hasError)
+            {
+                return;
+            }
+            var data = request.GetData<float>();
+            int count = data.Length;
+            if (_humidityData == null || _humidityData.Length != count)
+            {
+                _humidityData = new float[count];
+            }
+            _humidityWidth = width;
+            _humidityHeight = height;
+            data.CopyTo(_humidityData);
+        });
+    }
+
     private Vector3 GetSynopticGizmoWorldPosition(float u, float v)
     {
         if (target != null)
@@ -742,6 +805,7 @@ public class Weather2D : MonoBehaviour
         Visualize();
         HandleDebugLogging(Time.deltaTime);
         MaybeRequestSynopticReadback();
+        MaybeRequestHumidityReadback();
 
         if (_quadMaterial != null)
         {
@@ -1286,6 +1350,7 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetVector("_GroundColor", groundColor);
         fluidCompute.SetVector("_CloudShadowColor", cloudShadowColor);
         fluidCompute.SetFloat("_CloudShadowStrength", Mathf.Max(0f, cloudShadowStrength));
+        fluidCompute.SetFloat("_ShowHumidity", showHumidityInDisplay ? 1f : 0f);
         Dispatch(_kVisualize);
     }
 
@@ -1874,42 +1939,69 @@ public class Weather2D : MonoBehaviour
     {
         if (!showSynopticPressureGizmos || _synopticPressureData == null || _synopticPressureWidth == 0 || _synopticPressureHeight == 0)
         {
-            return;
+            // Keep going so humidity gizmos can still render.
         }
 
-        int grid = Mathf.Max(2, synopticGizmoGrid);
-        float stepX = 1f / (grid - 1);
-        float stepY = 1f / (grid - 1);
-        float aspect = _synopticPressureHeight > 0 ? (float)_synopticPressureWidth / _synopticPressureHeight : 1f;
-        float scale = Mathf.Max(0.001f, synopticGizmoScale);
-
-        Gizmos.color = synopticGizmoColor;
-
-        for (int gy = 0; gy < grid; gy++)
+        if (showSynopticPressureGizmos && _synopticPressureData != null && _synopticPressureWidth > 0 && _synopticPressureHeight > 0)
         {
-            for (int gx = 0; gx < grid; gx++)
+            int grid = Mathf.Max(2, synopticGizmoGrid);
+            float stepX = 1f / (grid - 1);
+            float stepY = 1f / (grid - 1);
+            float aspect = _synopticPressureHeight > 0 ? (float)_synopticPressureWidth / _synopticPressureHeight : 1f;
+            float scale = Mathf.Max(0.001f, synopticGizmoScale);
+
+            Gizmos.color = synopticGizmoColor;
+
+            for (int gy = 0; gy < grid; gy++)
             {
-                float u = gx * stepX;
-                float v = gy * stepY;
-                int x = Mathf.Clamp(Mathf.RoundToInt(u * (_synopticPressureWidth - 1)), 1, _synopticPressureWidth - 2);
-                int y = Mathf.Clamp(Mathf.RoundToInt(v * (_synopticPressureHeight - 1)), 1, _synopticPressureHeight - 2);
-
-                float left = _synopticPressureData[(y * _synopticPressureWidth) + (x - 1)];
-                float right = _synopticPressureData[(y * _synopticPressureWidth) + (x + 1)];
-                float down = _synopticPressureData[((y - 1) * _synopticPressureWidth) + x];
-                float up = _synopticPressureData[((y + 1) * _synopticPressureWidth) + x];
-
-                Vector2 grad = new Vector2(right - left, up - down) * 0.5f;
-                grad.x *= aspect;
-                Vector2 dir = -grad;
-                if (dir.sqrMagnitude > 0.000001f)
+                for (int gx = 0; gx < grid; gx++)
                 {
-                    dir.Normalize();
-                }
+                    float u = gx * stepX;
+                    float v = gy * stepY;
+                    int x = Mathf.Clamp(Mathf.RoundToInt(u * (_synopticPressureWidth - 1)), 1, _synopticPressureWidth - 2);
+                    int y = Mathf.Clamp(Mathf.RoundToInt(v * (_synopticPressureHeight - 1)), 1, _synopticPressureHeight - 2);
 
-                Vector3 world = GetSynopticGizmoWorldPosition(u, v);
-                Vector3 tip = world + new Vector3(dir.x, dir.y, 0f) * scale;
-                Gizmos.DrawLine(world, tip);
+                    float left = _synopticPressureData[(y * _synopticPressureWidth) + (x - 1)];
+                    float right = _synopticPressureData[(y * _synopticPressureWidth) + (x + 1)];
+                    float down = _synopticPressureData[((y - 1) * _synopticPressureWidth) + x];
+                    float up = _synopticPressureData[((y + 1) * _synopticPressureWidth) + x];
+
+                    Vector2 grad = new Vector2(right - left, up - down) * 0.5f;
+                    grad.x *= aspect;
+                    Vector2 dir = -grad;
+                    if (dir.sqrMagnitude > 0.000001f)
+                    {
+                        dir.Normalize();
+                    }
+
+                    Vector3 world = GetSynopticGizmoWorldPosition(u, v);
+                    Vector3 tip = world + new Vector3(dir.x, dir.y, 0f) * scale;
+                    Gizmos.DrawLine(world, tip);
+                }
+            }
+        }
+
+        if (showHumidityGizmos && _humidityData != null && _humidityWidth > 0 && _humidityHeight > 0)
+        {
+            int grid = Mathf.Max(2, humidityGizmoGrid);
+            float stepX = 1f / (grid - 1);
+            float stepY = 1f / (grid - 1);
+            float scale = Mathf.Max(0.001f, humidityGizmoScale);
+
+            for (int gy = 0; gy < grid; gy++)
+            {
+                for (int gx = 0; gx < grid; gx++)
+                {
+                    float u = gx * stepX;
+                    float v = gy * stepY;
+                    int x = Mathf.Clamp(Mathf.RoundToInt(u * (_humidityWidth - 1)), 0, _humidityWidth - 1);
+                    int y = Mathf.Clamp(Mathf.RoundToInt(v * (_humidityHeight - 1)), 0, _humidityHeight - 1);
+                    float humidity = _humidityData[(y * _humidityWidth) + x];
+                    float t = Mathf.Clamp01(humidity * 0.25f);
+                    Gizmos.color = Color.Lerp(humidityLowColor, humidityHighColor, t);
+                    Vector3 world = GetSynopticGizmoWorldPosition(u, v);
+                    Gizmos.DrawCube(world, Vector3.one * scale);
+                }
             }
         }
     }
