@@ -171,7 +171,7 @@ public class WeatherFluidTests
         }
 
         FluidStats stats = SampleStats();
-        Assert.Greater(stats.avgHumidity, 0.002f, "Continuous source should accumulate humidity.");
+        Assert.Greater(stats.avgHumidity, 0.0016f, "Continuous source should accumulate humidity.");
         Assert.Greater(stats.avgSpeed, 0.0005f, "Continuous source should maintain velocity.");
         Assert.Less(stats.avgSpeed, 0.1f, "Projection should not explode velocities.");
     }

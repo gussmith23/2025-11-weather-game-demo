@@ -9,6 +9,7 @@
     "optionalUnityReferences": [
         "TestAssemblies"
     ],
+    "testAssemblies": true,
     "allowUnsafeCode": false,
     "overrideReferences": false,
     "precompiledReferences": [],

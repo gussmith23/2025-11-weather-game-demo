@@ -13,6 +13,8 @@
 #pragma kernel InjectSynopticPressure
 #pragma kernel ApplyPressureForcing
 #pragma kernel ApplyCoriolis
+#pragma kernel SeedThermoProfile
+#pragma kernel ApplyConvergence
 
 // 8x8 threads cover 64 pixels per group
 #define THREADS_X 8
@@ -66,6 +68,14 @@ cbuffer SimParams
     float2 _PressureCenter;
     float _PressureRadius;
     float _PressureStrength;
+    float _BaseTemperature;
+    float _LapseRate;
+    float _SurfaceHumidity;
+    float _HumidityDecay;
+    float _ConvergenceStrength;
+    float _ConvergenceWidth;
+    float _ConvergenceHeight;
+    float _ConvergenceWindSpeed;
     float2 _UnusedPad2;
 };
 
@@ -520,4 +530,60 @@ void ApplyCoriolis(uint3 dispatchThreadID : SV_DispatchThreadID)
     float2 perp = float2(-vel.y, vel.x);
     vel += perp * (_CoriolisStrength * _DeltaTime);
     _CoriolisVelocity[coord] = vel;
+}
+
+// ---------------------------------------------------------------------------
+// Thermodynamic profile seeding
+RWTexture2D<float> _SeedTemperatureA;
+RWTexture2D<float> _SeedTemperatureB;
+RWTexture2D<float> _SeedHumidityA;
+RWTexture2D<float> _SeedHumidityB;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void SeedThermoProfile(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float temperature = _BaseTemperature - _LapseRate * uv.y;
+    float humidity = _SurfaceHumidity * exp(-_HumidityDecay * uv.y);
+
+    _SeedTemperatureA[coord] = temperature;
+    _SeedTemperatureB[coord] = temperature;
+    _SeedHumidityA[coord] = humidity;
+    _SeedHumidityB[coord] = humidity;
+}
+
+// ---------------------------------------------------------------------------
+// Low-level convergence forcing
+RWTexture2D<float2> _ConvergenceVelocity;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplyConvergence(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    if (_ConvergenceStrength <= 0.0001)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float heightFalloff = 1.0 - smoothstep(_ConvergenceHeight, _ConvergenceHeight + 0.1, uv.y);
+    if (heightFalloff <= 0.0)
+        return;
+
+    float dist = abs(uv.x - 0.5);
+    float band = 1.0 - smoothstep(_ConvergenceWidth, _ConvergenceWidth * 1.5, dist);
+    if (band <= 0.0)
+        return;
+
+    float targetX = (uv.x < 0.5 ? 1.0 : -1.0) * _ConvergenceWindSpeed;
+    float2 target = float2(targetX, 0.0);
+    float blend = saturate(_ConvergenceStrength * _DeltaTime * heightFalloff * band);
+
+    float2 vel = _ConvergenceVelocity[coord];
+    _ConvergenceVelocity[coord] = lerp(vel, target, blend);
 }

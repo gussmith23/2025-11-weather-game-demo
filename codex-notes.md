@@ -127,3 +127,17 @@
 
 ## 2025-11-16 – Synoptic pressure gizmo overlay
 - Added an optional gizmo debug overlay that draws vector arrows for the synoptic pressure gradient field (toggleable in the inspector).
+
+## 2025-11-16 – Thunderstorm forcing preset
+- Added a thermodynamic lapse-rate seeding pass, low-level convergence forcing, and a Thunderstorm demo (same size as Sandbox) that uses a moisture/temperature profile plus convergence to trigger a convective cell.
+
+## 2025-11-16 – Thunderstorm demo test
+- Added an Edit Mode test that loads the Thunderstorm demo, samples temperature/humidity/velocity/cloud at specific locations over time, and verifies updraft and precipitation behavior.
+
+## 2025-11-16 – Debug buffer resilience
+- Added a guard to recreate the compute debug buffer if it’s missing, preventing null-buffer errors after sim rebuilds.
+
+## 2025-11-16 – Test runner + thunderstorm tuning
+- Updated `run-tests.sh` to omit `-quit` so Unity’s CLI test runner actually executes and writes `editmode-results.xml`. Marked the EditMode asmdef as `testAssemblies` to ensure discovery.
+- Tuned Thunderstorm demo parameters (thermo profile, convergence strength, and initial burst) and added microphysics overrides for that scenario.
+- Fixed edit-mode test warnings by using `DestroyImmediate` when releasing render textures outside play mode.

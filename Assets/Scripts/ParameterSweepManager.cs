@@ -23,7 +23,7 @@ public class ParameterSweepManager : MonoBehaviour
     {
         if (template == null)
         {
-            template = FindObjectOfType<Weather2D>();
+            template = FindFirstObjectByType<Weather2D>();
         }
 
         if (template == null)

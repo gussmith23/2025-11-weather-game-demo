@@ -59,9 +59,9 @@ public class Weather2D : MonoBehaviour
 
     [Header("Synoptic Wind")]
     [Range(0f, 3f)]
-    public float pressureForceStrength = 0.6f;
+    public float pressureForceStrength = 0f;
     [Range(-3f, 3f)]
-    public float coriolisStrength = 0.8f;
+    public float coriolisStrength = 0f;
     [Range(0.9f, 1f)]
     public float synopticPressureDissipation = 0.999f;
 
@@ -75,6 +75,25 @@ public class Weather2D : MonoBehaviour
     public float synopticGizmoUpdateInterval = 0.2f;
     public Color synopticGizmoColor = new Color(0.2f, 0.9f, 1f, 0.8f);
     public bool verboseSynopticGizmoReadback = false;
+
+    [Header("Thermo Profile")]
+    public float baseTemperature = 0.4f;
+    public float lapseRate = 0.8f;
+    [Range(0f, 2f)]
+    public float surfaceHumidity = 0.9f;
+    [Range(0f, 6f)]
+    public float humidityDecay = 2.5f;
+
+    [Header("Convergence Forcing")]
+    public bool enableConvergence = false;
+    [Range(0f, 6f)]
+    public float convergenceStrength = 1.5f;
+    [Range(0.01f, 0.5f)]
+    public float convergenceWidth = 0.18f;
+    [Range(0.05f, 1f)]
+    public float convergenceHeight = 0.35f;
+    [Range(0f, 3f)]
+    public float convergenceWindSpeed = 1.2f;
 
     [Header("Display")]
     public RawImage target;
@@ -190,6 +209,8 @@ public class Weather2D : MonoBehaviour
     private int _kInjectSynopticPressure;
     private int _kPressureForcing;
     private int _kCoriolis;
+    private int _kSeedThermoProfile;
+    private int _kApplyConvergence;
 
     private Vector2Int _dispatch;
     private Material _quadMaterial;
@@ -200,6 +221,20 @@ public class Weather2D : MonoBehaviour
     private float _defaultPressureForceStrength;
     private float _defaultCoriolisStrength;
     private float _defaultSynopticPressureDissipation;
+    private float _defaultBaseTemperature;
+    private float _defaultLapseRate;
+    private float _defaultSurfaceHumidity;
+    private float _defaultHumidityDecay;
+    private bool _defaultEnableConvergence;
+    private float _defaultConvergenceStrength;
+    private float _defaultConvergenceWidth;
+    private float _defaultConvergenceHeight;
+    private float _defaultConvergenceWindSpeed;
+    private float _defaultSaturationThreshold;
+    private float _defaultCondensationRate;
+    private float _defaultEvaporationRate;
+    private float _defaultPrecipitationRate;
+    private float _defaultLatentHeatBuoyancy;
     private float[] _synopticPressureData;
     private int _synopticPressureWidth;
     private int _synopticPressureHeight;
@@ -299,6 +334,23 @@ public class Weather2D : MonoBehaviour
         public float coriolisStrength;
         public float synopticPressureDissipation;
         public bool overrideSynopticSettings;
+        public bool useThermoProfile;
+        public float baseTemperature;
+        public float lapseRate;
+        public float surfaceHumidity;
+        public float humidityDecay;
+        public bool overrideConvergence;
+        public bool enableConvergence;
+        public float convergenceStrength;
+        public float convergenceWidth;
+        public float convergenceHeight;
+        public float convergenceWindSpeed;
+        public bool overrideMicrophysics;
+        public float saturationThreshold;
+        public float condensationRate;
+        public float evaporationRate;
+        public float precipitationRate;
+        public float latentHeatBuoyancy;
     }
 
     /// <summary>
@@ -346,6 +398,8 @@ public class Weather2D : MonoBehaviour
         _kInjectSynopticPressure = fluidCompute.FindKernel("InjectSynopticPressure");
         _kPressureForcing = fluidCompute.FindKernel("ApplyPressureForcing");
         _kCoriolis = fluidCompute.FindKernel("ApplyCoriolis");
+        _kSeedThermoProfile = fluidCompute.FindKernel("SeedThermoProfile");
+        _kApplyConvergence = fluidCompute.FindKernel("ApplyConvergence");
 
         _defaultQuadSize = quadSize;
         _defaultSimWidth = simWidth;
@@ -353,6 +407,20 @@ public class Weather2D : MonoBehaviour
         _defaultPressureForceStrength = pressureForceStrength;
         _defaultCoriolisStrength = coriolisStrength;
         _defaultSynopticPressureDissipation = synopticPressureDissipation;
+        _defaultBaseTemperature = baseTemperature;
+        _defaultLapseRate = lapseRate;
+        _defaultSurfaceHumidity = surfaceHumidity;
+        _defaultHumidityDecay = humidityDecay;
+        _defaultEnableConvergence = enableConvergence;
+        _defaultConvergenceStrength = convergenceStrength;
+        _defaultConvergenceWidth = convergenceWidth;
+        _defaultConvergenceHeight = convergenceHeight;
+        _defaultConvergenceWindSpeed = convergenceWindSpeed;
+        _defaultSaturationThreshold = saturationThreshold;
+        _defaultCondensationRate = condensationRate;
+        _defaultEvaporationRate = evaporationRate;
+        _defaultPrecipitationRate = precipitationRate;
+        _defaultLatentHeatBuoyancy = latentHeatBuoyancy;
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
@@ -572,7 +640,14 @@ public class Weather2D : MonoBehaviour
         if (rt != null)
         {
             rt.Release();
-            Destroy(rt);
+            if (Application.isPlaying)
+            {
+                Destroy(rt);
+            }
+            else
+            {
+                DestroyImmediate(rt);
+            }
             rt = null;
         }
     }
@@ -581,6 +656,14 @@ public class Weather2D : MonoBehaviour
     {
         ReleaseDebugBuffer();
         _debugBuffer = new ComputeBuffer(12, sizeof(float));
+    }
+
+    private void EnsureDebugBuffer()
+    {
+        if (_debugBuffer == null)
+        {
+            CreateDebugBuffer();
+        }
     }
 
     private void ConfigureSurfaceMap()
@@ -671,6 +754,7 @@ public class Weather2D : MonoBehaviour
     /// </summary>
     private void RunFluidStep(float dt)
     {
+        EnsureDebugBuffer();
         fluidCompute.SetFloat("_DeltaTime", dt);
         fluidCompute.SetFloat("_VelocityDissipation", velocityDissipation);
         fluidCompute.SetFloat("_DensityDissipation", densityDissipation);
@@ -707,6 +791,7 @@ public class Weather2D : MonoBehaviour
         ApplyBackgroundWind();
         ApplySynopticPressureForcing();
         ApplyCoriolisForce();
+        ApplyConvergence();
         AdvectVelocity();
         AdvectHumidity();
         AdvectCloud();
@@ -952,6 +1037,34 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_CoriolisStrength", coriolisStrength);
         fluidCompute.SetTexture(_kCoriolis, "_CoriolisVelocity", _velocityA);
         Dispatch(_kCoriolis);
+    }
+
+    private void ApplyConvergence()
+    {
+        if (!enableConvergence || convergenceStrength <= 0.0001f)
+        {
+            return;
+        }
+
+        fluidCompute.SetFloat("_ConvergenceStrength", Mathf.Max(0f, convergenceStrength));
+        fluidCompute.SetFloat("_ConvergenceWidth", Mathf.Max(0.001f, convergenceWidth));
+        fluidCompute.SetFloat("_ConvergenceHeight", Mathf.Max(0.001f, convergenceHeight));
+        fluidCompute.SetFloat("_ConvergenceWindSpeed", convergenceWindSpeed);
+        fluidCompute.SetTexture(_kApplyConvergence, "_ConvergenceVelocity", _velocityA);
+        Dispatch(_kApplyConvergence);
+    }
+
+    private void SeedThermoProfile(float baseTemp, float lapse, float surfaceHumid, float decay)
+    {
+        fluidCompute.SetFloat("_BaseTemperature", baseTemp);
+        fluidCompute.SetFloat("_LapseRate", lapse);
+        fluidCompute.SetFloat("_SurfaceHumidity", Mathf.Max(0f, surfaceHumid));
+        fluidCompute.SetFloat("_HumidityDecay", Mathf.Max(0f, decay));
+        fluidCompute.SetTexture(_kSeedThermoProfile, "_SeedTemperatureA", _temperatureA);
+        fluidCompute.SetTexture(_kSeedThermoProfile, "_SeedTemperatureB", _temperatureB);
+        fluidCompute.SetTexture(_kSeedThermoProfile, "_SeedHumidityA", _humidityA);
+        fluidCompute.SetTexture(_kSeedThermoProfile, "_SeedHumidityB", _humidityB);
+        Dispatch(_kSeedThermoProfile);
     }
 
     private void AdvectSynopticPressure()
@@ -1384,6 +1497,53 @@ public class Weather2D : MonoBehaviour
             },
             new DemoScenario
             {
+                name = "Thunderstorm",
+                densityDissipation = 0.999f,
+                velocityDissipation = 0.995f,
+                sourceRadius = 0.08f,
+                sourceDensity = 4f,
+                sourceHeight = 0.05f,
+                sourceVelocity = new Vector2(0f, 1.5f),
+                timeScale = 1f,
+                disableBaseSource = true,
+                quadSize = 7.5f,
+                simWidth = 640,
+                simHeight = 256,
+                loopInterval = 0f,
+                precipitationFeedbackOverride = -1f,
+                overrideSynopticSettings = false,
+                overrideConvergence = true,
+                enableConvergence = true,
+                convergenceStrength = 2.8f,
+                convergenceWidth = 0.24f,
+                convergenceHeight = 0.35f,
+                convergenceWindSpeed = 1.8f,
+                overrideMicrophysics = true,
+                saturationThreshold = 0.5f,
+                condensationRate = 7.5f,
+                evaporationRate = 1.6f,
+                precipitationRate = 0.8f,
+                latentHeatBuoyancy = 2.0f,
+                useThermoProfile = true,
+                baseTemperature = 0.55f,
+                lapseRate = 0.95f,
+                surfaceHumidity = 1.0f,
+                humidityDecay = 2.8f,
+                initialBursts = new[]
+                {
+                    new Burst
+                    {
+                        position = new Vector2(0.5f, 0.18f),
+                        radius = 0.15f,
+                        density = 28f,
+                        velocity = new Vector2(0f, 2.8f),
+                        heat = 5.5f,
+                        turbulence = 3.0f
+                    }
+                }
+            },
+            new DemoScenario
+            {
                 name = "Perpetual Plume",
                 densityDissipation = 0.9997f,
                 velocityDissipation = 0.996f,
@@ -1614,6 +1774,40 @@ public class Weather2D : MonoBehaviour
             coriolisStrength = _defaultCoriolisStrength;
             synopticPressureDissipation = _defaultSynopticPressureDissipation;
         }
+
+        if (scenario.overrideConvergence)
+        {
+            enableConvergence = scenario.enableConvergence;
+            convergenceStrength = scenario.convergenceStrength;
+            convergenceWidth = scenario.convergenceWidth;
+            convergenceHeight = scenario.convergenceHeight;
+            convergenceWindSpeed = scenario.convergenceWindSpeed;
+        }
+        else
+        {
+            enableConvergence = _defaultEnableConvergence;
+            convergenceStrength = _defaultConvergenceStrength;
+            convergenceWidth = _defaultConvergenceWidth;
+            convergenceHeight = _defaultConvergenceHeight;
+            convergenceWindSpeed = _defaultConvergenceWindSpeed;
+        }
+
+        if (scenario.overrideMicrophysics)
+        {
+            saturationThreshold = scenario.saturationThreshold;
+            condensationRate = scenario.condensationRate;
+            evaporationRate = scenario.evaporationRate;
+            precipitationRate = scenario.precipitationRate;
+            latentHeatBuoyancy = scenario.latentHeatBuoyancy;
+        }
+        else
+        {
+            saturationThreshold = _defaultSaturationThreshold;
+            condensationRate = _defaultCondensationRate;
+            evaporationRate = _defaultEvaporationRate;
+            precipitationRate = _defaultPrecipitationRate;
+            latentHeatBuoyancy = _defaultLatentHeatBuoyancy;
+        }
         ApplyPrecipitationFeedbackOverride(scenario);
 
         ClearScriptedBursts();
@@ -1622,6 +1816,15 @@ public class Weather2D : MonoBehaviour
             RebuildSimulation();
         }
         ResetSimulation();
+        if (scenario.useThermoProfile)
+        {
+            float baseTemp = scenario.baseTemperature != 0f ? scenario.baseTemperature : _defaultBaseTemperature;
+            float lapse = scenario.lapseRate != 0f ? scenario.lapseRate : _defaultLapseRate;
+            float humid = scenario.surfaceHumidity != 0f ? scenario.surfaceHumidity : _defaultSurfaceHumidity;
+            float decay = scenario.humidityDecay != 0f ? scenario.humidityDecay : _defaultHumidityDecay;
+            SeedThermoProfile(baseTemp, lapse, humid, decay);
+        }
+
         if (scenario.stormCenters != null && scenario.stormCenters.Length > 0)
         {
             float radius = Mathf.Max(0.005f, scenario.stormRadius > 0f ? scenario.stormRadius : 0.12f);
