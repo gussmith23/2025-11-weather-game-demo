@@ -10,6 +10,9 @@
 #pragma kernel ComputeStats
 #pragma kernel ApplyUpperDamping
 #pragma kernel ApplyBackgroundWind
+#pragma kernel InjectSynopticPressure
+#pragma kernel ApplyPressureForcing
+#pragma kernel ApplyCoriolis
 
 // 8x8 threads cover 64 pixels per group
 #define THREADS_X 8
@@ -58,7 +61,12 @@ cbuffer SimParams
     float _SourceTurbulence;
     float2 _BackgroundWind;
     float _BackgroundWindStrength;
-    float _UnusedPad2;
+    float _PressureForceStrength;
+    float _CoriolisStrength;
+    float2 _PressureCenter;
+    float _PressureRadius;
+    float _PressureStrength;
+    float2 _UnusedPad2;
 };
 
 float2 clampUV(float2 uv)
@@ -445,4 +453,71 @@ void ApplyBackgroundWind(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     float2 vel = _BackgroundWindVelocity[coord];
     _BackgroundWindVelocity[coord] = lerp(vel, _BackgroundWind, blend);
+}
+
+// ---------------------------------------------------------------------------
+// Synoptic pressure injection (for storm centers)
+RWTexture2D<float> _SynopticPressureWrite;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void InjectSynopticPressure(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float aspect = _SimSize.y > 0 ? (float)_SimSize.x / _SimSize.y : 1.0;
+    float2 delta = uv - _PressureCenter;
+    delta.x *= aspect;
+    float dist = length(delta);
+    float sigma = max(0.0001, _PressureRadius);
+    float falloff = exp(-0.5 * (dist * dist) / (sigma * sigma));
+    _SynopticPressureWrite[coord] += _PressureStrength * falloff;
+}
+
+// ---------------------------------------------------------------------------
+// Pressure-gradient forcing
+Texture2D<float> _PressureForceTex;
+RWTexture2D<float2> _PressureForceVelocity;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplyPressureForcing(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    if (_PressureForceStrength <= 0.0001)
+        return;
+
+    float left = _PressureForceTex.Load(int3(max(coord.x - 1, 0), coord.y, 0));
+    float right = _PressureForceTex.Load(int3(min(coord.x + 1, _SimSize.x - 1), coord.y, 0));
+    float down = _PressureForceTex.Load(int3(coord.x, max(coord.y - 1, 0), 0));
+    float up = _PressureForceTex.Load(int3(coord.x, min(coord.y + 1, _SimSize.y - 1), 0));
+    float2 grad = float2(right - left, up - down) * 0.5;
+
+    float2 vel = _PressureForceVelocity[coord];
+    vel += (-grad) * (_PressureForceStrength * _DeltaTime);
+    _PressureForceVelocity[coord] = vel;
+}
+
+// ---------------------------------------------------------------------------
+// Coriolis-like turning
+RWTexture2D<float2> _CoriolisVelocity;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplyCoriolis(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    if (abs(_CoriolisStrength) <= 0.0001)
+        return;
+
+    float2 vel = _CoriolisVelocity[coord];
+    float2 perp = float2(-vel.y, vel.x);
+    vel += perp * (_CoriolisStrength * _DeltaTime);
+    _CoriolisVelocity[coord] = vel;
 }

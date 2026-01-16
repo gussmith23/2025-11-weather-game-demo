@@ -57,6 +57,25 @@ public class Weather2D : MonoBehaviour
     [Range(0f, 10f)]
     public float backgroundWindStrength = 0f;
 
+    [Header("Synoptic Wind")]
+    [Range(0f, 3f)]
+    public float pressureForceStrength = 0.6f;
+    [Range(-3f, 3f)]
+    public float coriolisStrength = 0.8f;
+    [Range(0.9f, 1f)]
+    public float synopticPressureDissipation = 0.999f;
+
+    [Header("Synoptic Debug")]
+    public bool showSynopticPressureGizmos = false;
+    [Range(4, 64)]
+    public int synopticGizmoGrid = 16;
+    [Range(0.01f, 5f)]
+    public float synopticGizmoScale = 0.5f;
+    [Range(0.05f, 1f)]
+    public float synopticGizmoUpdateInterval = 0.2f;
+    public Color synopticGizmoColor = new Color(0.2f, 0.9f, 1f, 0.8f);
+    public bool verboseSynopticGizmoReadback = false;
+
     [Header("Display")]
     public RawImage target;
     public FilterMode filter = FilterMode.Bilinear;
@@ -149,6 +168,8 @@ public class Weather2D : MonoBehaviour
     private RenderTexture _pressureA;
     private RenderTexture _pressureB;
     private RenderTexture _divergence;
+    private RenderTexture _synopticPressureA;
+    private RenderTexture _synopticPressureB;
     private RenderTexture _display;
     private RenderTexture _precipitation;
     private ComputeBuffer _debugBuffer;
@@ -166,6 +187,9 @@ public class Weather2D : MonoBehaviour
     private int _kMicrophysics;
     private int _kUpperDamping;
     private int _kBackgroundWind;
+    private int _kInjectSynopticPressure;
+    private int _kPressureForcing;
+    private int _kCoriolis;
 
     private Vector2Int _dispatch;
     private Material _quadMaterial;
@@ -173,6 +197,15 @@ public class Weather2D : MonoBehaviour
     private float _defaultQuadSize;
     private int _defaultSimWidth;
     private int _defaultSimHeight;
+    private float _defaultPressureForceStrength;
+    private float _defaultCoriolisStrength;
+    private float _defaultSynopticPressureDissipation;
+    private float[] _synopticPressureData;
+    private int _synopticPressureWidth;
+    private int _synopticPressureHeight;
+    private float _nextSynopticReadbackTime;
+    private bool _synopticReadbackPending;
+    private bool _synopticReadbackUnsupportedLogged;
     private int _activeDemo;
     private long _stepsCompleted;
     private float _debugTimer;
@@ -259,6 +292,13 @@ public class Weather2D : MonoBehaviour
         public float quadSize;
         public int simWidth;
         public int simHeight;
+        public Vector2[] stormCenters;
+        public float stormRadius;
+        public float stormStrength;
+        public float pressureForceStrength;
+        public float coriolisStrength;
+        public float synopticPressureDissipation;
+        public bool overrideSynopticSettings;
     }
 
     /// <summary>
@@ -303,10 +343,16 @@ public class Weather2D : MonoBehaviour
         _kMicrophysics = fluidCompute.FindKernel("MoistureMicrophysics");
         _kUpperDamping = fluidCompute.FindKernel("ApplyUpperDamping");
         _kBackgroundWind = fluidCompute.FindKernel("ApplyBackgroundWind");
+        _kInjectSynopticPressure = fluidCompute.FindKernel("InjectSynopticPressure");
+        _kPressureForcing = fluidCompute.FindKernel("ApplyPressureForcing");
+        _kCoriolis = fluidCompute.FindKernel("ApplyCoriolis");
 
         _defaultQuadSize = quadSize;
         _defaultSimWidth = simWidth;
         _defaultSimHeight = simHeight;
+        _defaultPressureForceStrength = pressureForceStrength;
+        _defaultCoriolisStrength = coriolisStrength;
+        _defaultSynopticPressureDissipation = synopticPressureDissipation;
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
@@ -372,6 +418,8 @@ public class Weather2D : MonoBehaviour
         _pressureA = CreateScalarRT(RenderTextureFormat.RFloat);
         _pressureB = CreateScalarRT(RenderTextureFormat.RFloat);
         _divergence = CreateScalarRT(RenderTextureFormat.RFloat);
+        _synopticPressureA = CreateScalarRT(RenderTextureFormat.RFloat);
+        _synopticPressureB = CreateScalarRT(RenderTextureFormat.RFloat);
         _display = CreateDisplayRT();
         _precipitation = CreateScalarRT(RenderTextureFormat.RFloat);
         CreateDebugBuffer();
@@ -397,6 +445,8 @@ public class Weather2D : MonoBehaviour
         Release(ref _pressureA);
         Release(ref _pressureB);
         Release(ref _divergence);
+        Release(ref _synopticPressureA);
+        Release(ref _synopticPressureB);
         Release(ref _display);
         Release(ref _precipitation);
         ReleaseDebugBuffer();
@@ -410,6 +460,84 @@ public class Weather2D : MonoBehaviour
         {
             target.texture = _display;
         }
+    }
+
+    private void MaybeRequestSynopticReadback()
+    {
+        if (!showSynopticPressureGizmos || _synopticPressureA == null || _synopticReadbackPending)
+        {
+            return;
+        }
+
+        if (!SystemInfo.supportsAsyncGPUReadback)
+        {
+            if (!_synopticReadbackUnsupportedLogged)
+            {
+                Debug.LogWarning("Synoptic gizmos require AsyncGPUReadback support.", this);
+                _synopticReadbackUnsupportedLogged = true;
+            }
+            return;
+        }
+
+        float interval = Mathf.Max(0.01f, synopticGizmoUpdateInterval);
+        if (Time.time < _nextSynopticReadbackTime)
+        {
+            return;
+        }
+
+        _synopticReadbackPending = true;
+        _nextSynopticReadbackTime = Time.time + interval;
+        int width = _synopticPressureA.width;
+        int height = _synopticPressureA.height;
+        AsyncGPUReadback.Request(_synopticPressureA, 0, request =>
+        {
+            _synopticReadbackPending = false;
+            if (request.hasError)
+            {
+                if (verboseSynopticGizmoReadback)
+                {
+                    Debug.LogWarning("Synoptic gizmo readback failed.", this);
+                }
+                return;
+            }
+            var data = request.GetData<float>();
+            int count = data.Length;
+            if (_synopticPressureData == null || _synopticPressureData.Length != count)
+            {
+                _synopticPressureData = new float[count];
+            }
+            _synopticPressureWidth = width;
+            _synopticPressureHeight = height;
+            data.CopyTo(_synopticPressureData);
+            if (verboseSynopticGizmoReadback)
+            {
+                float min = _synopticPressureData[0];
+                float max = _synopticPressureData[0];
+                for (int i = 1; i < _synopticPressureData.Length; i++)
+                {
+                    float value = _synopticPressureData[i];
+                    if (value < min) min = value;
+                    if (value > max) max = value;
+                }
+                Debug.Log($"Synoptic gizmo readback ok ({width}x{height}). Range: {min:F4} to {max:F4}", this);
+            }
+        });
+    }
+
+    private Vector3 GetSynopticGizmoWorldPosition(float u, float v)
+    {
+        if (target != null)
+        {
+            RectTransform rect = target.rectTransform;
+            Vector3[] corners = new Vector3[4];
+            rect.GetWorldCorners(corners);
+            Vector3 bottom = Vector3.Lerp(corners[0], corners[3], u);
+            Vector3 top = Vector3.Lerp(corners[1], corners[2], u);
+            return Vector3.Lerp(bottom, top, v);
+        }
+
+        Vector3 local = new Vector3(u - 0.5f, v - 0.5f, 0f);
+        return _quadTransform != null ? _quadTransform.TransformPoint(local) : transform.TransformPoint(local);
     }
 
     private RenderTexture CreateVectorRT()
@@ -530,6 +658,7 @@ public class Weather2D : MonoBehaviour
 
         Visualize();
         HandleDebugLogging(Time.deltaTime);
+        MaybeRequestSynopticReadback();
 
         if (_quadMaterial != null)
         {
@@ -551,9 +680,9 @@ public class Weather2D : MonoBehaviour
         // Base thermal source near the ground.
         if (_useBaseSource)
         {
-        Vector2 baseCenter = new Vector2(0.5f, Mathf.Clamp01(sourceHeight));
-        InjectImpulse(baseCenter, sourceRadius, sourceDensity, sourceVelocity, dt,
-            modulateSurface: _hasSurfaceMap && _useBaseSource);
+            Vector2 baseCenter = new Vector2(0.5f, Mathf.Clamp01(sourceHeight));
+            InjectImpulse(baseCenter, sourceRadius, sourceDensity, sourceVelocity, dt,
+                modulateSurface: _hasSurfaceMap && _useBaseSource);
         }
 
         if (enableMouseInput && IsPointerPressed() && TryGetPointerUV(out Vector2 mouseUV))
@@ -576,11 +705,14 @@ public class Weather2D : MonoBehaviour
         }
 
         ApplyBackgroundWind();
+        ApplySynopticPressureForcing();
+        ApplyCoriolisForce();
         AdvectVelocity();
         AdvectHumidity();
         AdvectCloud();
         AdvectTemperature();
         AdvectTurbulence();
+        AdvectSynopticPressure();
         ProjectVelocity();
         ApplyUpperDamping();
         RunMicrophysics(dt);
@@ -767,6 +899,16 @@ public class Weather2D : MonoBehaviour
         Dispatch(_kInject);
     }
 
+    /// <summary>Add a synoptic pressure gaussian to seed storm centers.</summary>
+    private void InjectSynopticPressure(Vector2 center, float radius, float strength)
+    {
+        fluidCompute.SetVector("_PressureCenter", new Vector4(center.x, center.y, 0f, 0f));
+        fluidCompute.SetFloat("_PressureRadius", Mathf.Max(0.0001f, radius));
+        fluidCompute.SetFloat("_PressureStrength", strength);
+        fluidCompute.SetTexture(_kInjectSynopticPressure, "_SynopticPressureWrite", _synopticPressureA);
+        Dispatch(_kInjectSynopticPressure);
+    }
+
     /// <summary>Advect the velocity grid.</summary>
     private void AdvectVelocity()
     {
@@ -787,6 +929,40 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_BackgroundWindStrength", Mathf.Max(0f, backgroundWindStrength));
         fluidCompute.SetTexture(_kBackgroundWind, "_BackgroundWindVelocity", _velocityA);
         Dispatch(_kBackgroundWind);
+    }
+
+    private void ApplySynopticPressureForcing()
+    {
+        if (pressureForceStrength <= 0.0001f)
+        {
+            return;
+        }
+        fluidCompute.SetFloat("_PressureForceStrength", Mathf.Max(0f, pressureForceStrength));
+        fluidCompute.SetTexture(_kPressureForcing, "_PressureForceTex", _synopticPressureA);
+        fluidCompute.SetTexture(_kPressureForcing, "_PressureForceVelocity", _velocityA);
+        Dispatch(_kPressureForcing);
+    }
+
+    private void ApplyCoriolisForce()
+    {
+        if (Mathf.Abs(coriolisStrength) <= 0.0001f)
+        {
+            return;
+        }
+        fluidCompute.SetFloat("_CoriolisStrength", coriolisStrength);
+        fluidCompute.SetTexture(_kCoriolis, "_CoriolisVelocity", _velocityA);
+        Dispatch(_kCoriolis);
+    }
+
+    private void AdvectSynopticPressure()
+    {
+        fluidCompute.SetFloat("_DensityDissipation", Mathf.Clamp01(synopticPressureDissipation));
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldRead", _synopticPressureA);
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarFieldWrite", _synopticPressureB);
+        fluidCompute.SetTexture(_kAdvectScalar, "_ScalarVelocity", _velocityA);
+        fluidCompute.SetBuffer(_kAdvectScalar, "_DebugBuffer", _debugBuffer);
+        Dispatch(_kAdvectScalar);
+        Swap(ref _synopticPressureA, ref _synopticPressureB);
     }
 
     /// <summary>Advect the humidity scalar.</summary>
@@ -1136,6 +1312,8 @@ public class Weather2D : MonoBehaviour
         ClearRenderTexture(_pressureA, Color.clear);
         ClearRenderTexture(_pressureB, Color.clear);
         ClearRenderTexture(_divergence, Color.clear);
+        ClearRenderTexture(_synopticPressureA, Color.clear);
+        ClearRenderTexture(_synopticPressureB, Color.clear);
         ClearRenderTexture(_display, lowColor);
         ClearRenderTexture(_precipitation, Color.clear);
         ClearDebugBuffer();
@@ -1175,6 +1353,34 @@ public class Weather2D : MonoBehaviour
                 simHeight = 256,
                 loopInterval = 0f,
                 precipitationFeedbackOverride = -1f
+            },
+            new DemoScenario
+            {
+                name = "Two Storms",
+                densityDissipation = 0.999f,
+                velocityDissipation = 0.995f,
+                sourceRadius = 0.08f,
+                sourceDensity = 4f,
+                sourceHeight = 0.05f,
+                sourceVelocity = new Vector2(0f, 1.5f),
+                timeScale = 1f,
+                disableBaseSource = true,
+                quadSize = 7.5f,
+                simWidth = 640,
+                simHeight = 256,
+                loopInterval = 0f,
+                precipitationFeedbackOverride = -1f,
+                overrideSynopticSettings = true,
+                pressureForceStrength = 1.1f,
+                coriolisStrength = 1.4f,
+                synopticPressureDissipation = 0.999f,
+                stormRadius = 0.12f,
+                stormStrength = -1.4f,
+                stormCenters = new[]
+                {
+                    new Vector2(0.35f, 0.45f),
+                    new Vector2(0.65f, 0.55f)
+                }
             },
             new DemoScenario
             {
@@ -1394,6 +1600,20 @@ public class Weather2D : MonoBehaviour
         _scenarioTimeScale = scenario.timeScale > 0f ? scenario.timeScale : 1f;
         quadSize = scenario.quadSize > 0f ? scenario.quadSize : _defaultQuadSize;
         UpdateQuadScale();
+        if (scenario.overrideSynopticSettings)
+        {
+            pressureForceStrength = scenario.pressureForceStrength;
+            coriolisStrength = scenario.coriolisStrength;
+            synopticPressureDissipation = scenario.synopticPressureDissipation > 0f
+                ? scenario.synopticPressureDissipation
+                : _defaultSynopticPressureDissipation;
+        }
+        else
+        {
+            pressureForceStrength = _defaultPressureForceStrength;
+            coriolisStrength = _defaultCoriolisStrength;
+            synopticPressureDissipation = _defaultSynopticPressureDissipation;
+        }
         ApplyPrecipitationFeedbackOverride(scenario);
 
         ClearScriptedBursts();
@@ -1402,6 +1622,15 @@ public class Weather2D : MonoBehaviour
             RebuildSimulation();
         }
         ResetSimulation();
+        if (scenario.stormCenters != null && scenario.stormCenters.Length > 0)
+        {
+            float radius = Mathf.Max(0.005f, scenario.stormRadius > 0f ? scenario.stormRadius : 0.12f);
+            float strength = scenario.stormStrength != 0f ? scenario.stormStrength : -1.25f;
+            foreach (var center in scenario.stormCenters)
+            {
+                InjectSynopticPressure(center, radius, strength);
+            }
+        }
         if (scenario.initialBursts != null)
         {
             foreach (var burst in scenario.initialBursts)
@@ -1435,6 +1664,50 @@ public class Weather2D : MonoBehaviour
         else
         {
             precipitationFeedback = _defaultPrecipitationFeedback;
+        }
+    }
+
+    private void OnDrawGizmos()
+    {
+        if (!showSynopticPressureGizmos || _synopticPressureData == null || _synopticPressureWidth == 0 || _synopticPressureHeight == 0)
+        {
+            return;
+        }
+
+        int grid = Mathf.Max(2, synopticGizmoGrid);
+        float stepX = 1f / (grid - 1);
+        float stepY = 1f / (grid - 1);
+        float aspect = _synopticPressureHeight > 0 ? (float)_synopticPressureWidth / _synopticPressureHeight : 1f;
+        float scale = Mathf.Max(0.001f, synopticGizmoScale);
+
+        Gizmos.color = synopticGizmoColor;
+
+        for (int gy = 0; gy < grid; gy++)
+        {
+            for (int gx = 0; gx < grid; gx++)
+            {
+                float u = gx * stepX;
+                float v = gy * stepY;
+                int x = Mathf.Clamp(Mathf.RoundToInt(u * (_synopticPressureWidth - 1)), 1, _synopticPressureWidth - 2);
+                int y = Mathf.Clamp(Mathf.RoundToInt(v * (_synopticPressureHeight - 1)), 1, _synopticPressureHeight - 2);
+
+                float left = _synopticPressureData[(y * _synopticPressureWidth) + (x - 1)];
+                float right = _synopticPressureData[(y * _synopticPressureWidth) + (x + 1)];
+                float down = _synopticPressureData[((y - 1) * _synopticPressureWidth) + x];
+                float up = _synopticPressureData[((y + 1) * _synopticPressureWidth) + x];
+
+                Vector2 grad = new Vector2(right - left, up - down) * 0.5f;
+                grad.x *= aspect;
+                Vector2 dir = -grad;
+                if (dir.sqrMagnitude > 0.000001f)
+                {
+                    dir.Normalize();
+                }
+
+                Vector3 world = GetSynopticGizmoWorldPosition(u, v);
+                Vector3 tip = world + new Vector3(dir.x, dir.y, 0f) * scale;
+                Gizmos.DrawLine(world, tip);
+            }
         }
     }
 

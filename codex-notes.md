@@ -121,3 +121,9 @@
 
 ## 2025-11-16 – Aspect-correct source radius
 - Adjusted source falloff to account for sim aspect ratio, keeping injection/brush circles visually circular in wide sims.
+
+## 2025-11-16 – Synoptic pressure + two storms demo
+- Added a synoptic pressure field with pressure-gradient forcing and Coriolis-like turning, plus a "Two Storms" demo (same size as Sandbox) that seeds two low-pressure centers to interact.
+
+## 2025-11-16 – Synoptic pressure gizmo overlay
+- Added an optional gizmo debug overlay that draws vector arrows for the synoptic pressure gradient field (toggleable in the inspector).
