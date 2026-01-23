@@ -87,6 +87,12 @@ public class Weather2D : MonoBehaviour
     public Color humidityLowColor = new Color(0.05f, 0.2f, 0.6f, 0.5f);
     public Color humidityHighColor = new Color(0.9f, 0.9f, 1f, 0.8f);
 
+    [Header("Time Controls")]
+    [Range(1f, 20f)]
+    public float fastForwardScale = 1f;
+    [Range(0f, 10f)]
+    public float fastForwardDuration = 0f;
+
     [Header("Thermo Profile")]
     public float baseTemperature = 0.4f;
     public float lapseRate = 0.8f;
@@ -105,6 +111,8 @@ public class Weather2D : MonoBehaviour
     public float convergenceHeight = 0.35f;
     [Range(0f, 3f)]
     public float convergenceWindSpeed = 1.2f;
+    [Range(0f, 3f)]
+    public float convergenceUpdraft = 0f;
 
     [Header("Display")]
     public RawImage target;
@@ -242,11 +250,14 @@ public class Weather2D : MonoBehaviour
     private float _defaultConvergenceWidth;
     private float _defaultConvergenceHeight;
     private float _defaultConvergenceWindSpeed;
+    private float _defaultConvergenceUpdraft;
     private float _defaultSaturationThreshold;
     private float _defaultCondensationRate;
     private float _defaultEvaporationRate;
     private float _defaultPrecipitationRate;
     private float _defaultLatentHeatBuoyancy;
+    private float _defaultFastForwardScale;
+    private float _defaultFastForwardDuration;
     private float[] _synopticPressureData;
     private int _synopticPressureWidth;
     private int _synopticPressureHeight;
@@ -275,6 +286,8 @@ public class Weather2D : MonoBehaviour
     private float _latestAvgCloud;
     private float _latestAvgHumidity;
     private float _latestAvgSpeed;
+    private float _fastForwardTimer;
+    private float _effectiveTimeScale = 1f;
     private readonly List<ScheduledBurst> _scheduledRocketBursts = new List<ScheduledBurst>();
     private readonly List<ActiveBurst> _activeRocketBursts = new List<ActiveBurst>();
 
@@ -301,6 +314,7 @@ public class Weather2D : MonoBehaviour
     public float LatestAvgHumidity => _latestAvgHumidity;
     public float LatestAvgSpeed => _latestAvgSpeed;
     public int PendingRocketBurstCount => _scheduledRocketBursts.Count + _activeRocketBursts.Count;
+    public float EffectiveTimeScale => _effectiveTimeScale;
 
     [System.Serializable]
     public struct Burst
@@ -362,12 +376,16 @@ public class Weather2D : MonoBehaviour
         public float convergenceWidth;
         public float convergenceHeight;
         public float convergenceWindSpeed;
+        public float convergenceUpdraft;
         public bool overrideMicrophysics;
         public float saturationThreshold;
         public float condensationRate;
         public float evaporationRate;
         public float precipitationRate;
         public float latentHeatBuoyancy;
+        public bool overrideFastForward;
+        public float fastForwardScale;
+        public float fastForwardDuration;
     }
 
     /// <summary>
@@ -433,11 +451,14 @@ public class Weather2D : MonoBehaviour
         _defaultConvergenceWidth = convergenceWidth;
         _defaultConvergenceHeight = convergenceHeight;
         _defaultConvergenceWindSpeed = convergenceWindSpeed;
+        _defaultConvergenceUpdraft = convergenceUpdraft;
         _defaultSaturationThreshold = saturationThreshold;
         _defaultCondensationRate = condensationRate;
         _defaultEvaporationRate = evaporationRate;
         _defaultPrecipitationRate = precipitationRate;
         _defaultLatentHeatBuoyancy = latentHeatBuoyancy;
+        _defaultFastForwardScale = fastForwardScale;
+        _defaultFastForwardDuration = fastForwardDuration;
         AllocateTextures();
         ConfigureTarget();
         EnsureDemoScenarios();
@@ -793,7 +814,9 @@ public class Weather2D : MonoBehaviour
             return;
 
         ConfigureSurfaceMap();
-        float dt = Mathf.Min(Time.deltaTime, 0.033f) * Mathf.Max(0.1f, _scenarioTimeScale);
+        float timeScale = GetEffectiveTimeScale();
+        _effectiveTimeScale = timeScale;
+        float dt = Mathf.Min(Time.deltaTime, 0.033f) * Mathf.Max(0.1f, timeScale);
         int steps = Mathf.Max(1, substeps);
         float subDt = (dt / steps);
 
@@ -811,6 +834,19 @@ public class Weather2D : MonoBehaviour
         {
             _quadMaterial.mainTexture = _display;
         }
+    }
+
+    private float GetEffectiveTimeScale()
+    {
+        float scale = _scenarioTimeScale;
+        if (_fastForwardTimer > 0f && fastForwardDuration > 0f)
+        {
+            float t = Mathf.Clamp01(_fastForwardTimer / fastForwardDuration);
+            float fastScale = Mathf.Max(1f, fastForwardScale);
+            scale *= Mathf.Lerp(1f, fastScale, t);
+            _fastForwardTimer = Mathf.Max(0f, _fastForwardTimer - Time.deltaTime);
+        }
+        return scale;
     }
 
     /// <summary>
@@ -1114,6 +1150,7 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_ConvergenceWidth", Mathf.Max(0.001f, convergenceWidth));
         fluidCompute.SetFloat("_ConvergenceHeight", Mathf.Max(0.001f, convergenceHeight));
         fluidCompute.SetFloat("_ConvergenceWindSpeed", convergenceWindSpeed);
+        fluidCompute.SetFloat("_ConvergenceUpdraft", convergenceUpdraft);
         fluidCompute.SetTexture(_kApplyConvergence, "_ConvergenceVelocity", _velocityA);
         Dispatch(_kApplyConvergence);
     }
@@ -1518,14 +1555,14 @@ public class Weather2D : MonoBehaviour
             new DemoScenario
             {
                 name = "Sandbox",
-                densityDissipation = 0.999f,
+                densityDissipation = 0.9999f,
                 velocityDissipation = 0.995f,
-                sourceRadius = 0.08f,
-                sourceDensity = 4f,
-                sourceHeight = 0.05f,
-                sourceVelocity = new Vector2(0f, 1.5f),
-                timeScale = 1f,
-                disableBaseSource = true,
+                sourceRadius = 0.12f,
+                sourceDensity = 2000f,
+                sourceHeight = 0.18f,
+                sourceVelocity = new Vector2(0f, 6.0f),
+                timeScale = 0.6f,
+                disableBaseSource = false,
                 quadSize = 7.5f,
                 simWidth = 640,
                 simHeight = 256,
@@ -1563,49 +1600,53 @@ public class Weather2D : MonoBehaviour
             new DemoScenario
             {
                 name = "Thunderstorm",
-                densityDissipation = 0.999f,
-                velocityDissipation = 0.995f,
-                sourceRadius = 0.08f,
-                sourceDensity = 4f,
+                densityDissipation = 0.995f,
+                velocityDissipation = 0.985f,
+                sourceRadius = 0.05f,
+                sourceDensity = 2f,
                 sourceHeight = 0.05f,
-                sourceVelocity = new Vector2(0f, 1.5f),
-                timeScale = 1f,
+                sourceVelocity = new Vector2(0f, 0.4f),
+                timeScale = 0.5f,
                 disableBaseSource = true,
                 quadSize = 7.5f,
                 simWidth = 640,
                 simHeight = 256,
-                loopInterval = 0f,
                 precipitationFeedbackOverride = -1f,
                 overrideSynopticSettings = false,
                 overrideConvergence = true,
                 enableConvergence = true,
-                convergenceStrength = 2.8f,
-                convergenceWidth = 0.24f,
-                convergenceHeight = 0.35f,
-                convergenceWindSpeed = 1.8f,
+                convergenceStrength = 4.0f,
+                convergenceWidth = 0.06f,
+                convergenceHeight = 0.5f,
+                convergenceWindSpeed = 1.2f,
+                convergenceUpdraft = 0.8f,
                 overrideMicrophysics = true,
-                saturationThreshold = 0.5f,
-                condensationRate = 7.5f,
-                evaporationRate = 1.6f,
-                precipitationRate = 0.8f,
-                latentHeatBuoyancy = 2.0f,
+                saturationThreshold = 0.02f,
+                condensationRate = 500f,
+                evaporationRate = 0f,
+                precipitationRate = 0.01f,
+                latentHeatBuoyancy = 6.0f,
+                overrideFastForward = true,
+                fastForwardScale = 2f,
+                fastForwardDuration = 0.5f,
                 useThermoProfile = true,
                 baseTemperature = 0.55f,
                 lapseRate = 0.95f,
-                surfaceHumidity = 1.0f,
-                humidityDecay = 2.8f,
+                surfaceHumidity = 0.05f,
+                humidityDecay = 1.5f,
                 initialBursts = new[]
                 {
                     new Burst
                     {
                         position = new Vector2(0.5f, 0.18f),
-                        radius = 0.15f,
-                        density = 28f,
-                        velocity = new Vector2(0f, 2.8f),
-                        heat = 5.5f,
-                        turbulence = 3.0f
+                        radius = 0.12f,
+                        density = 30f,
+                        velocity = new Vector2(0f, 3.0f),
+                        heat = 4.0f,
+                        turbulence = 2.5f
                     }
-                }
+                },
+                loopInterval = 0f
             },
             new DemoScenario
             {
@@ -1847,6 +1888,7 @@ public class Weather2D : MonoBehaviour
             convergenceWidth = scenario.convergenceWidth;
             convergenceHeight = scenario.convergenceHeight;
             convergenceWindSpeed = scenario.convergenceWindSpeed;
+            convergenceUpdraft = scenario.convergenceUpdraft;
         }
         else
         {
@@ -1855,6 +1897,7 @@ public class Weather2D : MonoBehaviour
             convergenceWidth = _defaultConvergenceWidth;
             convergenceHeight = _defaultConvergenceHeight;
             convergenceWindSpeed = _defaultConvergenceWindSpeed;
+            convergenceUpdraft = _defaultConvergenceUpdraft;
         }
 
         if (scenario.overrideMicrophysics)
@@ -1873,6 +1916,19 @@ public class Weather2D : MonoBehaviour
             precipitationRate = _defaultPrecipitationRate;
             latentHeatBuoyancy = _defaultLatentHeatBuoyancy;
         }
+
+        if (scenario.overrideFastForward)
+        {
+            fastForwardScale = scenario.fastForwardScale > 0f ? scenario.fastForwardScale : _defaultFastForwardScale;
+            fastForwardDuration = Mathf.Max(0f, scenario.fastForwardDuration);
+        }
+        else
+        {
+            fastForwardScale = _defaultFastForwardScale;
+            fastForwardDuration = _defaultFastForwardDuration;
+        }
+
+        _fastForwardTimer = fastForwardDuration;
         ApplyPrecipitationFeedbackOverride(scenario);
 
         ClearScriptedBursts();

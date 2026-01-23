@@ -72,10 +72,11 @@ cbuffer SimParams
     float _LapseRate;
     float _SurfaceHumidity;
     float _HumidityDecay;
-    float _ConvergenceStrength;
-    float _ConvergenceWidth;
-    float _ConvergenceHeight;
-    float _ConvergenceWindSpeed;
+float _ConvergenceStrength;
+float _ConvergenceWidth;
+float _ConvergenceHeight;
+float _ConvergenceWindSpeed;
+float _ConvergenceUpdraft;
     float2 _UnusedPad2;
 };
 
@@ -582,9 +583,10 @@ void ApplyConvergence(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
 
     float targetX = (uv.x < 0.5 ? 1.0 : -1.0) * _ConvergenceWindSpeed;
-    float2 target = float2(targetX, 0.0);
     float blend = saturate(_ConvergenceStrength * _DeltaTime * heightFalloff * band);
 
     float2 vel = _ConvergenceVelocity[coord];
-    _ConvergenceVelocity[coord] = lerp(vel, target, blend);
+    float newX = lerp(vel.x, targetX, blend);
+    float newY = lerp(vel.y, _ConvergenceUpdraft, blend);
+    _ConvergenceVelocity[coord] = float2(newX, newY);
 }
