@@ -1600,8 +1600,8 @@ public class Weather2D : MonoBehaviour
             new DemoScenario
             {
                 name = "Thunderstorm",
-                densityDissipation = 0.995f,
-                velocityDissipation = 0.985f,
+                densityDissipation = 0.9995f,
+                velocityDissipation = 0.994f,
                 sourceRadius = 0.05f,
                 sourceDensity = 2f,
                 sourceHeight = 0.05f,
@@ -1615,38 +1615,50 @@ public class Weather2D : MonoBehaviour
                 overrideSynopticSettings = false,
                 overrideConvergence = true,
                 enableConvergence = true,
-                convergenceStrength = 4.0f,
-                convergenceWidth = 0.06f,
-                convergenceHeight = 0.5f,
-                convergenceWindSpeed = 1.2f,
-                convergenceUpdraft = 0.8f,
+                convergenceStrength = 5.2f,
+                convergenceWidth = 0.045f,
+                convergenceHeight = 0.6f,
+                convergenceWindSpeed = 1.45f,
+                convergenceUpdraft = 1.4f,
                 overrideMicrophysics = true,
-                saturationThreshold = 0.02f,
-                condensationRate = 500f,
+                saturationThreshold = 0.015f,
+                condensationRate = 1200f,
                 evaporationRate = 0f,
-                precipitationRate = 0.01f,
-                latentHeatBuoyancy = 6.0f,
+                precipitationRate = 0.0045f,
+                latentHeatBuoyancy = 7.8f,
                 overrideFastForward = true,
-                fastForwardScale = 2f,
-                fastForwardDuration = 0.5f,
+                fastForwardScale = 3f,
+                fastForwardDuration = 1.0f,
                 useThermoProfile = true,
                 baseTemperature = 0.55f,
                 lapseRate = 0.95f,
-                surfaceHumidity = 0.05f,
-                humidityDecay = 1.5f,
+                surfaceHumidity = 0.04f,
+                humidityDecay = 1.75f,
                 initialBursts = new[]
                 {
                     new Burst
                     {
                         position = new Vector2(0.5f, 0.18f),
-                        radius = 0.12f,
-                        density = 30f,
-                        velocity = new Vector2(0f, 3.0f),
-                        heat = 4.0f,
-                        turbulence = 2.5f
+                        radius = 0.17f,
+                        density = 50f,
+                        velocity = new Vector2(0f, 3.8f),
+                        heat = 6.5f,
+                        turbulence = 3.6f
                     }
                 },
-                loopInterval = 0f
+                loopBursts = new[]
+                {
+                    new Burst
+                    {
+                        position = new Vector2(0.5f, 0.08f),
+                        radius = 0.11f,
+                        density = 7.0f,
+                        velocity = new Vector2(0f, 1.9f),
+                        heat = 1.6f,
+                        turbulence = 1.1f
+                    }
+                },
+                loopInterval = 0.2f
             },
             new DemoScenario
             {
