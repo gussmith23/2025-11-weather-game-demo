@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
@@ -7,6 +8,11 @@ using UnityEngine.Rendering;
 public class Weather2DThunderstormTests
 {
     private const bool Verbose = true;
+    private static readonly bool CaptureEnabled = GetEnvFlag("THUNDERSTORM_CAPTURE");
+    private static readonly string CaptureDir = GetEnvString("THUNDERSTORM_CAPTURE_DIR", "Logs/thunderstorm-captures");
+    private static readonly string CaptureRunPrefix = GetEnvString("THUNDERSTORM_CAPTURE_RUN_PREFIX", "run");
+    private static readonly int CaptureEverySteps = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_EVERY", 10));
+    private static readonly int CaptureMaxFrames = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_MAX", 300));
 
     [Test]
     public void ThunderstormDemoBuildsUpdraftAndCloud()
@@ -31,6 +37,7 @@ public class Weather2DThunderstormTests
         var cloudRT = GetPrivateRT(weather, "_cloudA");
         var temperatureRT = GetPrivateRT(weather, "_temperatureA");
         var velocityRT = GetPrivateRT(weather, "_velocityA");
+        var displayRT = GetPrivateRT(weather, "_display");
 
         float lowTemp = SampleScalar(temperatureRT, new Vector2(0.5f, 0.1f));
         float highTemp = SampleScalar(temperatureRT, new Vector2(0.5f, 0.85f));
@@ -46,13 +53,21 @@ public class Weather2DThunderstormTests
         float fastScale = Mathf.Max(1f, weather.fastForwardScale);
         float fastDuration = Mathf.Max(0f, weather.fastForwardDuration);
         int fastSteps = Mathf.Max(1, Mathf.CeilToInt(fastDuration / baseDt));
+        float simTime = 0f;
+        int frameIndex = 0;
+        string runDir = CaptureDir;
+        if (CaptureEnabled)
+        {
+            runDir = CreateUniqueRunDir(CaptureDir, CaptureRunPrefix);
+            Debug.Log($"Thunderstorm capture enabled. Writing PNGs to: {runDir}");
+        }
         if (fastScale > 1f && fastDuration > 0f)
         {
-            weather.StepSimulation(baseDt * fastScale, fastSteps);
+            StepAndCapture(weather, displayRT, runDir, baseDt * fastScale, fastSteps, ref simTime, ref frameIndex);
             LogFieldSnapshot($"t={fastDuration:0.0}s (fast x{fastScale:0.0})", humidityRT, cloudRT, temperatureRT, velocityRT);
         }
 
-        weather.StepSimulation(baseDt, 80);
+        StepAndCapture(weather, displayRT, runDir, baseDt, 80, ref simTime, ref frameIndex);
 
         LogFieldSnapshot("t=0.8s", humidityRT, cloudRT, temperatureRT, velocityRT);
 
@@ -67,7 +82,7 @@ public class Weather2DThunderstormTests
         // Allow uniform cloud fields while still ensuring cloud forms.
         Assert.Greater(cloudPeak, 0.0001f, "Cloud water should form after the initial forcing.");
 
-        weather.StepSimulation(baseDt, 220);
+        StepAndCapture(weather, displayRT, runDir, baseDt, 220, ref simTime, ref frameIndex);
 
         LogFieldSnapshot("t=3.0s", humidityRT, cloudRT, temperatureRT, velocityRT);
 
@@ -146,6 +161,87 @@ public class Weather2DThunderstormTests
         var vel = ReadVectorGrid(velocityRT, 16);
 
         Debug.Log($"Thunderstorm snapshot {label}\nHumidity (top row first):\n{FormatGrid(humidity)}\nCloud (top row first):\n{FormatGrid(cloud)}\nTemp (top row first):\n{FormatGrid(temp)}\nVelocity (y) (top row first):\n{FormatVectorGridY(vel)}");
+    }
+
+    private static void StepAndCapture(Weather2D weather, RenderTexture displayRT, string runDir, float dt, int steps, ref float simTime, ref int frameIndex)
+    {
+        if (!CaptureEnabled || displayRT == null)
+        {
+            weather.StepSimulation(dt, steps);
+            simTime += dt * steps;
+            return;
+        }
+
+        int totalSteps = Mathf.Max(1, steps);
+        for (int i = 0; i < totalSteps; i++)
+        {
+            weather.StepSimulation(dt, 1);
+            simTime += dt;
+            if (frameIndex >= CaptureMaxFrames)
+                continue;
+            if (i % CaptureEverySteps == 0)
+            {
+                string fileName = $"thunderstorm_{frameIndex:0000}_t{simTime:0.00}.png";
+                string path = Path.Combine(runDir, fileName);
+                CaptureDisplay(displayRT, path);
+                frameIndex++;
+            }
+        }
+    }
+
+    private static void CaptureDisplay(RenderTexture displayRT, string path)
+    {
+        if (displayRT == null)
+            return;
+
+        RenderTexture prev = RenderTexture.active;
+        var temp = RenderTexture.GetTemporary(displayRT.width, displayRT.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        Graphics.Blit(displayRT, temp);
+        RenderTexture.active = temp;
+
+        var tex = new Texture2D(temp.width, temp.height, TextureFormat.RGBA32, false);
+        tex.ReadPixels(new Rect(0, 0, temp.width, temp.height), 0, 0);
+        tex.Apply();
+
+        RenderTexture.active = prev;
+        RenderTexture.ReleaseTemporary(temp);
+
+        byte[] bytes = tex.EncodeToPNG();
+        UnityEngine.Object.DestroyImmediate(tex);
+        File.WriteAllBytes(path, bytes);
+    }
+
+    private static string CreateUniqueRunDir(string baseDir, string prefix)
+    {
+        Directory.CreateDirectory(baseDir);
+        string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+        string runDir = Path.Combine(baseDir, $"{prefix}_{stamp}");
+        int suffix = 0;
+        while (Directory.Exists(runDir))
+        {
+            suffix++;
+            runDir = Path.Combine(baseDir, $"{prefix}_{stamp}_{suffix}");
+        }
+        Directory.CreateDirectory(runDir);
+        return runDir;
+    }
+
+    private static bool GetEnvFlag(string name)
+    {
+        string value = Environment.GetEnvironmentVariable(name);
+        return !string.IsNullOrEmpty(value) && (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string GetEnvString(string name, string defaultValue)
+    {
+        string value = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrEmpty(value) ? defaultValue : value;
+    }
+
+    private static int GetEnvInt(string name, int defaultValue)
+    {
+        string value = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(value, out int parsed) ? parsed : defaultValue;
     }
 
     private static float[,] ReadScalarGrid(RenderTexture rt, int grid)
