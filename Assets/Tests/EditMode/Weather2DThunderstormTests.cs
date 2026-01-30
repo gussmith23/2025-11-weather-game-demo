@@ -14,6 +14,7 @@ public class Weather2DThunderstormTests
     // Capture cadence is based on Tick() calls ("frames"), not sim substeps.
     private static readonly int CaptureEveryFrames = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_EVERY", 10));
     private static readonly int CaptureMaxFrames = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_MAX", 300));
+    private static readonly string[] CaptureLayers = ParseLayers(GetEnvString("THUNDERSTORM_CAPTURE_LAYERS", "display"));
 
     [Test]
     public void ThunderstormDemoBuildsUpdraftAndCloud()
@@ -39,6 +40,7 @@ public class Weather2DThunderstormTests
         var temperatureRT = GetPrivateRT(weather, "_temperatureA");
         var velocityRT = GetPrivateRT(weather, "_velocityA");
         var displayRT = GetPrivateRT(weather, "_display");
+        var precipRT = GetPrivateRT(weather, "_precipitation");
 
         float lowTemp = SampleScalar(temperatureRT, new Vector2(0.5f, 0.1f));
         float highTemp = SampleScalar(temperatureRT, new Vector2(0.5f, 0.85f));
@@ -58,10 +60,11 @@ public class Weather2DThunderstormTests
         if (CaptureEnabled)
         {
             runDir = CreateUniqueRunDir(CaptureDir, CaptureRunPrefix);
-            Debug.Log($"Thunderstorm capture enabled. Writing PNGs to: {runDir}");
+            Debug.Log($"Thunderstorm capture enabled. Writing PNGs to: {runDir}\nLayers: {string.Join(", ", CaptureLayers)}");
         }
 
-        TickAndCaptureForRealSeconds(weather, displayRT, runDir, 0.8f, realFrameDt, ref realTime, ref frameIndex, ref tickCount);
+        TickAndCaptureForRealSeconds(weather, displayRT, humidityRT, cloudRT, temperatureRT, velocityRT, precipRT, runDir, 0.8f, realFrameDt,
+            ref realTime, ref frameIndex, ref tickCount);
         LogFieldSnapshot($"real={realTime:0.00}s", humidityRT, cloudRT, temperatureRT, velocityRT);
 
         Vector2 updraft = SampleVector(velocityRT, new Vector2(0.5f, 0.2f));
@@ -75,7 +78,8 @@ public class Weather2DThunderstormTests
         // Allow uniform cloud fields while still ensuring cloud forms.
         Assert.Greater(cloudPeak, 0.0001f, "Cloud water should form after the initial forcing.");
 
-        TickAndCaptureForRealSeconds(weather, displayRT, runDir, 2.2f, realFrameDt, ref realTime, ref frameIndex, ref tickCount);
+        TickAndCaptureForRealSeconds(weather, displayRT, humidityRT, cloudRT, temperatureRT, velocityRT, precipRT, runDir, 2.2f, realFrameDt,
+            ref realTime, ref frameIndex, ref tickCount);
         LogFieldSnapshot($"real={realTime:0.00}s", humidityRT, cloudRT, temperatureRT, velocityRT);
 
         float precipAvg = weather.LatestAvgPrecip;
@@ -155,7 +159,8 @@ public class Weather2DThunderstormTests
         Debug.Log($"Thunderstorm snapshot {label}\nHumidity (top row first):\n{FormatGrid(humidity)}\nCloud (top row first):\n{FormatGrid(cloud)}\nTemp (top row first):\n{FormatGrid(temp)}\nVelocity (y) (top row first):\n{FormatVectorGridY(vel)}");
     }
 
-    private static void TickAndCaptureForRealSeconds(Weather2D weather, RenderTexture displayRT, string runDir, float seconds, float realDt,
+    private static void TickAndCaptureForRealSeconds(Weather2D weather, RenderTexture displayRT, RenderTexture humidityRT, RenderTexture cloudRT,
+        RenderTexture temperatureRT, RenderTexture velocityRT, RenderTexture precipRT, string runDir, float seconds, float realDt,
         ref float realTime, ref int frameIndex, ref int tickCount)
     {
         int frames = Mathf.Max(1, Mathf.CeilToInt(seconds / Mathf.Max(0.0001f, realDt)));
@@ -163,20 +168,79 @@ public class Weather2DThunderstormTests
         {
             weather.Tick(realDt);
             realTime += realDt;
-            if (!CaptureEnabled || displayRT == null)
+            if (!CaptureEnabled)
             {
                 tickCount++;
                 continue;
             }
+
             if (frameIndex < CaptureMaxFrames && (tickCount % CaptureEveryFrames) == 0)
             {
-                string fileName = $"thunderstorm_{frameIndex:0000}_real{realTime:0.00}.png";
-                string path = Path.Combine(runDir, fileName);
-                CaptureDisplay(displayRT, path);
+                string baseName = $"thunderstorm_{frameIndex:0000}_real{realTime:0.00}";
+                CaptureSelectedLayers(weather, displayRT, humidityRT, cloudRT, temperatureRT, velocityRT, precipRT, runDir, baseName);
                 frameIndex++;
             }
             tickCount++;
         }
+    }
+
+    private static void CaptureSelectedLayers(Weather2D weather, RenderTexture displayRT, RenderTexture humidityRT, RenderTexture cloudRT,
+        RenderTexture temperatureRT, RenderTexture velocityRT, RenderTexture precipRT, string runDir, string baseName)
+    {
+        for (int i = 0; i < CaptureLayers.Length; i++)
+        {
+            string layer = CaptureLayers[i];
+            if (layer == "display")
+            {
+                if (displayRT == null)
+                    continue;
+                CaptureDisplay(displayRT, Path.Combine(EnsureLayerDir(runDir, layer), $"{baseName}.png"));
+                continue;
+            }
+            if (layer == "cloud")
+            {
+                if (cloudRT == null)
+                    continue;
+                CaptureScalar(cloudRT, Path.Combine(EnsureLayerDir(runDir, layer), $"{baseName}.png"), GetRange("CLOUD", 0f, 0.02f));
+                continue;
+            }
+            if (layer == "humidity")
+            {
+                if (humidityRT == null)
+                    continue;
+                CaptureScalar(humidityRT, Path.Combine(EnsureLayerDir(runDir, layer), $"{baseName}.png"), GetRange("HUMIDITY", 0f, 0.08f));
+                continue;
+            }
+            if (layer == "precip")
+            {
+                if (precipRT == null)
+                    continue;
+                CaptureScalar(precipRT, Path.Combine(EnsureLayerDir(runDir, layer), $"{baseName}.png"), GetRange("PRECIP", 0f, 0.01f));
+                continue;
+            }
+            if (layer == "vy")
+            {
+                if (velocityRT == null)
+                    continue;
+                CaptureVelocityY(velocityRT, Path.Combine(EnsureLayerDir(runDir, layer), $"{baseName}.png"), GetRange("VY", -1.5f, 1.5f));
+                continue;
+            }
+            if (layer == "temp_anom")
+            {
+                if (temperatureRT == null)
+                    continue;
+                CaptureTemperatureAnomaly(weather, temperatureRT, Path.Combine(EnsureLayerDir(runDir, layer), $"{baseName}.png"),
+                    GetRange("TEMP_ANOM", -0.25f, 0.25f));
+                continue;
+            }
+        }
+    }
+
+    private static string EnsureLayerDir(string runDir, string layer)
+    {
+        string dir = Path.Combine(runDir, layer);
+        Directory.CreateDirectory(dir);
+        return dir;
     }
 
     private static void CaptureDisplay(RenderTexture displayRT, string path)
@@ -201,6 +265,124 @@ public class Weather2DThunderstormTests
         File.WriteAllBytes(path, bytes);
     }
 
+    private static void CaptureScalar(RenderTexture rt, string path, (float min, float max) range)
+    {
+        var req = AsyncGPUReadback.Request(rt, 0, TextureFormat.RFloat);
+        req.WaitForCompletion();
+        if (req.hasError)
+            return;
+
+        var data = req.GetData<float>();
+        int w = rt.width;
+        int h = rt.height;
+        float min = range.min;
+        float max = Mathf.Max(range.max, min + 1e-6f);
+
+        var colors = new Color32[w * h];
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                float v = data[(y * w) + x];
+                float t = Mathf.Clamp01((v - min) / (max - min));
+                byte b = (byte)Mathf.RoundToInt(t * 255f);
+                colors[(y * w) + x] = new Color32(b, b, b, 255);
+            }
+        }
+
+        SavePng(colors, w, h, path);
+    }
+
+    private static void CaptureVelocityY(RenderTexture rt, string path, (float min, float max) range)
+    {
+        var req = AsyncGPUReadback.Request(rt, 0, TextureFormat.RGFloat);
+        req.WaitForCompletion();
+        if (req.hasError)
+            return;
+
+        var data = req.GetData<Vector2>();
+        int w = rt.width;
+        int h = rt.height;
+        float min = range.min;
+        float max = Mathf.Max(range.max, min + 1e-6f);
+
+        var colors = new Color32[w * h];
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                float vy = data[(y * w) + x].y;
+                float t = Mathf.Clamp01((vy - min) / (max - min));
+                // Diverging map: updraft -> red, downdraft -> blue, neutral -> black.
+                if (vy >= 0f)
+                {
+                    byte r = (byte)Mathf.RoundToInt(t * 255f);
+                    colors[(y * w) + x] = new Color32(r, 0, 0, 255);
+                }
+                else
+                {
+                    byte b = (byte)Mathf.RoundToInt((1f - t) * 255f);
+                    colors[(y * w) + x] = new Color32(0, 0, b, 255);
+                }
+            }
+        }
+
+        SavePng(colors, w, h, path);
+    }
+
+    private static void CaptureTemperatureAnomaly(Weather2D weather, RenderTexture temperatureRT, string path, (float min, float max) range)
+    {
+        var req = AsyncGPUReadback.Request(temperatureRT, 0, TextureFormat.RFloat);
+        req.WaitForCompletion();
+        if (req.hasError)
+            return;
+
+        var data = req.GetData<float>();
+        int w = temperatureRT.width;
+        int h = temperatureRT.height;
+        float min = range.min;
+        float max = Mathf.Max(range.max, min + 1e-6f);
+
+        float baseTemp = weather != null ? weather.baseTemperature : 0f;
+        float lapse = weather != null ? weather.lapseRate : 0f;
+
+        var colors = new Color32[w * h];
+        for (int y = 0; y < h; y++)
+        {
+            float uvY = h > 1 ? y / (float)(h - 1) : 0f;
+            float envTemp = baseTemp - lapse * uvY;
+            for (int x = 0; x < w; x++)
+            {
+                float temp = data[(y * w) + x];
+                float anom = temp - envTemp;
+                float t = Mathf.Clamp01((anom - min) / (max - min));
+                // Diverging map: warm anomaly -> red, cool anomaly -> blue.
+                if (anom >= 0f)
+                {
+                    byte r = (byte)Mathf.RoundToInt(t * 255f);
+                    colors[(y * w) + x] = new Color32(r, 0, 0, 255);
+                }
+                else
+                {
+                    byte b = (byte)Mathf.RoundToInt((1f - t) * 255f);
+                    colors[(y * w) + x] = new Color32(0, 0, b, 255);
+                }
+            }
+        }
+
+        SavePng(colors, w, h, path);
+    }
+
+    private static void SavePng(Color32[] colors, int w, int h, string path)
+    {
+        var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        tex.SetPixels32(colors);
+        tex.Apply();
+        byte[] bytes = tex.EncodeToPNG();
+        UnityEngine.Object.DestroyImmediate(tex);
+        File.WriteAllBytes(path, bytes);
+    }
+
     private static string CreateUniqueRunDir(string baseDir, string prefix)
     {
         Directory.CreateDirectory(baseDir);
@@ -214,6 +396,46 @@ public class Weather2DThunderstormTests
         }
         Directory.CreateDirectory(runDir);
         return runDir;
+    }
+
+    private static (float min, float max) GetRange(string suffix, float defaultMin, float defaultMax)
+    {
+        string raw = Environment.GetEnvironmentVariable($"THUNDERSTORM_CAPTURE_RANGE_{suffix}");
+        if (string.IsNullOrEmpty(raw))
+            return (defaultMin, defaultMax);
+        var parts = raw.Split(',');
+        if (parts.Length != 2)
+            return (defaultMin, defaultMax);
+        if (!float.TryParse(parts[0], out float min))
+            min = defaultMin;
+        if (!float.TryParse(parts[1], out float max))
+            max = defaultMax;
+        return (min, max);
+    }
+
+    private static string[] ParseLayers(string raw)
+    {
+        if (string.IsNullOrEmpty(raw))
+            return new[] { "display" };
+        var parts = raw.Split(',');
+        int count = 0;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (!string.IsNullOrWhiteSpace(parts[i]))
+                count++;
+        }
+        if (count == 0)
+            return new[] { "display" };
+        var result = new string[count];
+        int idx = 0;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string p = parts[i].Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(p))
+                continue;
+            result[idx++] = p;
+        }
+        return result;
     }
 
     private static bool GetEnvFlag(string name)
