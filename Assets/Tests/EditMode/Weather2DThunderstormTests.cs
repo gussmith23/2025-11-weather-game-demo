@@ -11,7 +11,8 @@ public class Weather2DThunderstormTests
     private static readonly bool CaptureEnabled = GetEnvFlag("THUNDERSTORM_CAPTURE");
     private static readonly string CaptureDir = GetEnvString("THUNDERSTORM_CAPTURE_DIR", "Logs/thunderstorm-captures");
     private static readonly string CaptureRunPrefix = GetEnvString("THUNDERSTORM_CAPTURE_RUN_PREFIX", "run");
-    private static readonly int CaptureEverySteps = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_EVERY", 10));
+    // Capture cadence is based on Tick() calls ("frames"), not sim substeps.
+    private static readonly int CaptureEveryFrames = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_EVERY", 10));
     private static readonly int CaptureMaxFrames = Mathf.Max(1, GetEnvInt("THUNDERSTORM_CAPTURE_MAX", 300));
 
     [Test]
@@ -49,27 +50,19 @@ public class Weather2DThunderstormTests
 
         LogFieldSnapshot("t=0", humidityRT, cloudRT, temperatureRT, velocityRT);
 
-        float baseDt = 0.01f;
-        float fastScale = Mathf.Max(1f, weather.fastForwardScale);
-        float fastDuration = Mathf.Max(0f, weather.fastForwardDuration);
-        int fastSteps = Mathf.Max(1, Mathf.CeilToInt(fastDuration / baseDt));
-        float simTime = 0f;
+        float realFrameDt = 1f / 60f;
+        float realTime = 0f;
         int frameIndex = 0;
+        int tickCount = 0;
         string runDir = CaptureDir;
         if (CaptureEnabled)
         {
             runDir = CreateUniqueRunDir(CaptureDir, CaptureRunPrefix);
             Debug.Log($"Thunderstorm capture enabled. Writing PNGs to: {runDir}");
         }
-        if (fastScale > 1f && fastDuration > 0f)
-        {
-            StepAndCapture(weather, displayRT, runDir, baseDt * fastScale, fastSteps, ref simTime, ref frameIndex);
-            LogFieldSnapshot($"t={fastDuration:0.0}s (fast x{fastScale:0.0})", humidityRT, cloudRT, temperatureRT, velocityRT);
-        }
 
-        StepAndCapture(weather, displayRT, runDir, baseDt, 80, ref simTime, ref frameIndex);
-
-        LogFieldSnapshot("t=0.8s", humidityRT, cloudRT, temperatureRT, velocityRT);
+        TickAndCaptureForRealSeconds(weather, displayRT, runDir, 0.8f, realFrameDt, ref realTime, ref frameIndex, ref tickCount);
+        LogFieldSnapshot($"real={realTime:0.00}s", humidityRT, cloudRT, temperatureRT, velocityRT);
 
         Vector2 updraft = SampleVector(velocityRT, new Vector2(0.5f, 0.2f));
         Assert.Greater(updraft.y, 0.02f, "Convergence forcing should create an upward draft near the center.");
@@ -82,9 +75,8 @@ public class Weather2DThunderstormTests
         // Allow uniform cloud fields while still ensuring cloud forms.
         Assert.Greater(cloudPeak, 0.0001f, "Cloud water should form after the initial forcing.");
 
-        StepAndCapture(weather, displayRT, runDir, baseDt, 220, ref simTime, ref frameIndex);
-
-        LogFieldSnapshot("t=3.0s", humidityRT, cloudRT, temperatureRT, velocityRT);
+        TickAndCaptureForRealSeconds(weather, displayRT, runDir, 2.2f, realFrameDt, ref realTime, ref frameIndex, ref tickCount);
+        LogFieldSnapshot($"real={realTime:0.00}s", humidityRT, cloudRT, temperatureRT, velocityRT);
 
         float precipAvg = weather.LatestAvgPrecip;
         Assert.Greater(precipAvg, 0f, "Thunderstorm should generate precipitation over time.");
@@ -163,29 +155,27 @@ public class Weather2DThunderstormTests
         Debug.Log($"Thunderstorm snapshot {label}\nHumidity (top row first):\n{FormatGrid(humidity)}\nCloud (top row first):\n{FormatGrid(cloud)}\nTemp (top row first):\n{FormatGrid(temp)}\nVelocity (y) (top row first):\n{FormatVectorGridY(vel)}");
     }
 
-    private static void StepAndCapture(Weather2D weather, RenderTexture displayRT, string runDir, float dt, int steps, ref float simTime, ref int frameIndex)
+    private static void TickAndCaptureForRealSeconds(Weather2D weather, RenderTexture displayRT, string runDir, float seconds, float realDt,
+        ref float realTime, ref int frameIndex, ref int tickCount)
     {
-        if (!CaptureEnabled || displayRT == null)
+        int frames = Mathf.Max(1, Mathf.CeilToInt(seconds / Mathf.Max(0.0001f, realDt)));
+        for (int i = 0; i < frames; i++)
         {
-            weather.StepSimulation(dt, steps);
-            simTime += dt * steps;
-            return;
-        }
-
-        int totalSteps = Mathf.Max(1, steps);
-        for (int i = 0; i < totalSteps; i++)
-        {
-            weather.StepSimulation(dt, 1);
-            simTime += dt;
-            if (frameIndex >= CaptureMaxFrames)
-                continue;
-            if (i % CaptureEverySteps == 0)
+            weather.Tick(realDt);
+            realTime += realDt;
+            if (!CaptureEnabled || displayRT == null)
             {
-                string fileName = $"thunderstorm_{frameIndex:0000}_t{simTime:0.00}.png";
+                tickCount++;
+                continue;
+            }
+            if (frameIndex < CaptureMaxFrames && (tickCount % CaptureEveryFrames) == 0)
+            {
+                string fileName = $"thunderstorm_{frameIndex:0000}_real{realTime:0.00}.png";
                 string path = Path.Combine(runDir, fileName);
                 CaptureDisplay(displayRT, path);
                 frameIndex++;
             }
+            tickCount++;
         }
     }
 

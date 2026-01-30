@@ -93,6 +93,14 @@ public class Weather2D : MonoBehaviour
     [Range(0f, 10f)]
     public float fastForwardDuration = 0f;
 
+    [Header("Time Stepping")]
+    [Range(0.001f, 0.05f)]
+    public float fixedSimDt = 0.01f;
+    [Range(10, 5000)]
+    public int maxStepsPerTick = 600;
+    [Range(0.01f, 0.2f)]
+    public float maxRealDt = 0.033f;
+
     [Header("Thermo Profile")]
     public float baseTemperature = 0.4f;
     public float lapseRate = 0.8f;
@@ -287,6 +295,7 @@ public class Weather2D : MonoBehaviour
     private float _latestAvgHumidity;
     private float _latestAvgSpeed;
     private float _fastForwardTimer;
+    private float _simAccumulator;
     private float _effectiveTimeScale = 1f;
     private readonly List<ScheduledBurst> _scheduledRocketBursts = new List<ScheduledBurst>();
     private readonly List<ActiveBurst> _activeRocketBursts = new List<ActiveBurst>();
@@ -807,25 +816,13 @@ public class Weather2D : MonoBehaviour
 
     /// <summary>
     /// Main Unity update loop: advance substeps, visualize, and log stats.
-    /// </summary>
+     /// </summary>
     private void Update()
     {
         if (!_initialized && !Initialize())
             return;
 
-        ConfigureSurfaceMap();
-        float timeScale = GetEffectiveTimeScale();
-        _effectiveTimeScale = timeScale;
-        float dt = Mathf.Min(Time.deltaTime, 0.033f) * Mathf.Max(0.1f, timeScale);
-        int steps = Mathf.Max(1, substeps);
-        float subDt = (dt / steps);
-
-        for (int i = 0; i < steps; i++)
-        {
-            RunFluidStep(Mathf.Max(subDt, 0.0001f));
-        }
-
-        Visualize();
+        Tick(Time.deltaTime);
         HandleDebugLogging(Time.deltaTime);
         MaybeRequestSynopticReadback();
         MaybeRequestHumidityReadback();
@@ -836,7 +833,49 @@ public class Weather2D : MonoBehaviour
         }
     }
 
-    private float GetEffectiveTimeScale()
+    /// <summary>
+    /// Advance the simulation by a slice of real time. Tests and play mode should both call this
+    /// to share the same fast-forward schedule and stepping behavior.
+    /// </summary>
+    public void Tick(float realDt)
+    {
+        if (!_initialized && !Initialize())
+            return;
+
+        ConfigureSurfaceMap();
+
+        float clampedRealDt = Mathf.Clamp(realDt, 0f, Mathf.Max(0.0001f, maxRealDt));
+        float timeScale = Mathf.Max(0.1f, GetEffectiveTimeScale(clampedRealDt));
+        _effectiveTimeScale = timeScale;
+
+        float stepDt = Mathf.Max(0.0001f, fixedSimDt);
+        int macroStepCap = Mathf.Max(1, maxStepsPerTick);
+        int innerSubsteps = Mathf.Max(1, substeps);
+        float subDt = Mathf.Max(0.0001f, stepDt / innerSubsteps);
+
+        _simAccumulator += clampedRealDt * timeScale;
+
+        int macroSteps = 0;
+        while (_simAccumulator >= stepDt && macroSteps < macroStepCap)
+        {
+            for (int i = 0; i < innerSubsteps; i++)
+            {
+                RunFluidStep(subDt);
+            }
+            _simAccumulator -= stepDt;
+            macroSteps++;
+        }
+
+        // If we hit the cap (e.g., due to a debugger pause), prevent an ever-growing backlog.
+        if (macroSteps >= macroStepCap)
+        {
+            _simAccumulator = Mathf.Min(_simAccumulator, stepDt);
+        }
+
+        Visualize();
+    }
+
+    private float GetEffectiveTimeScale(float realDt)
     {
         float scale = _scenarioTimeScale;
         if (_fastForwardTimer > 0f && fastForwardDuration > 0f)
@@ -844,7 +883,7 @@ public class Weather2D : MonoBehaviour
             float t = Mathf.Clamp01(_fastForwardTimer / fastForwardDuration);
             float fastScale = Mathf.Max(1f, fastForwardScale);
             scale *= Mathf.Lerp(1f, fastScale, t);
-            _fastForwardTimer = Mathf.Max(0f, _fastForwardTimer - Time.deltaTime);
+            _fastForwardTimer = Mathf.Max(0f, _fastForwardTimer - Mathf.Max(0f, realDt));
         }
         return scale;
     }
