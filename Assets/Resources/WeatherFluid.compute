@@ -15,6 +15,8 @@
 #pragma kernel ApplyCoriolis
 #pragma kernel SeedThermoProfile
 #pragma kernel ApplyConvergence
+#pragma kernel RelaxHumidityToProfile
+#pragma kernel ApplyThermalBuoyancy
 
 // 8x8 threads cover 64 pixels per group
 #define THREADS_X 8
@@ -77,7 +79,10 @@ float _ConvergenceWidth;
 float _ConvergenceHeight;
 float _ConvergenceWindSpeed;
 float _ConvergenceUpdraft;
-    float2 _UnusedPad2;
+    float _SurfaceHumidityRelaxStrength;
+    float _SurfaceHumidityRelaxHeight;
+    float _ThermalBuoyancyStrength;
+    float _UnusedPad2;
 };
 
 float2 clampUV(float2 uv)
@@ -365,6 +370,58 @@ void MoistureMicrophysics(uint3 dispatchThreadID : SV_DispatchThreadID)
     _MicroVelocity[coord] = velocity;
     _MicroTemperature[coord] = temperature;
     _MicroTurbulence[coord] = max(0.0, turbulence);
+}
+
+// ---------------------------------------------------------------------------
+// Boundary-layer humidity nudging (surface moisture reservoir)
+RWTexture2D<float> _RelaxHumidity;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void RelaxHumidityToProfile(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    if (_SurfaceHumidityRelaxStrength <= 0.0001 || _SurfaceHumidityRelaxHeight <= 0.0001)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    if (uv.y > _SurfaceHumidityRelaxHeight)
+        return;
+
+    float target = _SurfaceHumidity * exp(-_HumidityDecay * uv.y);
+    float weight = 1.0 - saturate(uv.y / max(_SurfaceHumidityRelaxHeight, 0.0001));
+    float blend = saturate(_SurfaceHumidityRelaxStrength * _DeltaTime * weight);
+
+    float humidity = max(0.0, _RelaxHumidity[coord]);
+    humidity = lerp(humidity, target, blend);
+    _RelaxHumidity[coord] = max(0.0, humidity);
+}
+
+// ---------------------------------------------------------------------------
+// Thermal buoyancy forcing relative to the background profile.
+RWTexture2D<float2> _ThermalBuoyancyVelocity;
+Texture2D<float> _ThermalBuoyancyTemperature;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplyThermalBuoyancy(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int2 coord = int2(dispatchThreadID.xy);
+    if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
+        return;
+
+    if (abs(_ThermalBuoyancyStrength) <= 0.0001)
+        return;
+
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float envTemp = _BaseTemperature - _LapseRate * uv.y;
+    float temp = _ThermalBuoyancyTemperature.Load(int3(coord.x, coord.y, 0));
+
+    float buoy = (temp - envTemp) * _ThermalBuoyancyStrength;
+    float2 vel = _ThermalBuoyancyVelocity[coord];
+    vel.y += buoy * _DeltaTime;
+    _ThermalBuoyancyVelocity[coord] = vel;
 }
 
 // ---------------------------------------------------------------------------

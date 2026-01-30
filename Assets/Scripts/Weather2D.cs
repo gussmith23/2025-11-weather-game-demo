@@ -109,6 +109,17 @@ public class Weather2D : MonoBehaviour
     [Range(0f, 6f)]
     public float humidityDecay = 2.5f;
 
+    [Header("Surface Moisture Reservoir")]
+    public bool enableSurfaceHumidityRelax = false;
+    [Range(0f, 30f)]
+    public float surfaceHumidityRelaxStrength = 0f;
+    [Range(0f, 0.5f)]
+    public float surfaceHumidityRelaxHeight = 0.12f;
+
+    [Header("Thermal Buoyancy")]
+    [Range(-20f, 20f)]
+    public float thermalBuoyancyStrength = 0f;
+
     [Header("Convergence Forcing")]
     public bool enableConvergence = false;
     [Range(0f, 6f)]
@@ -239,6 +250,8 @@ public class Weather2D : MonoBehaviour
     private int _kCoriolis;
     private int _kSeedThermoProfile;
     private int _kApplyConvergence;
+    private int _kRelaxHumidityToProfile;
+    private int _kApplyThermalBuoyancy;
 
     private Vector2Int _dispatch;
     private Material _quadMaterial;
@@ -253,6 +266,10 @@ public class Weather2D : MonoBehaviour
     private float _defaultLapseRate;
     private float _defaultSurfaceHumidity;
     private float _defaultHumidityDecay;
+    private bool _defaultEnableSurfaceHumidityRelax;
+    private float _defaultSurfaceHumidityRelaxStrength;
+    private float _defaultSurfaceHumidityRelaxHeight;
+    private float _defaultThermalBuoyancyStrength;
     private bool _defaultEnableConvergence;
     private float _defaultConvergenceStrength;
     private float _defaultConvergenceWidth;
@@ -379,6 +396,10 @@ public class Weather2D : MonoBehaviour
         public float lapseRate;
         public float surfaceHumidity;
         public float humidityDecay;
+        public bool enableSurfaceHumidityRelax;
+        public float surfaceHumidityRelaxStrength;
+        public float surfaceHumidityRelaxHeight;
+        public float thermalBuoyancyStrength;
         public bool overrideConvergence;
         public bool enableConvergence;
         public float convergenceStrength;
@@ -444,6 +465,8 @@ public class Weather2D : MonoBehaviour
         _kCoriolis = fluidCompute.FindKernel("ApplyCoriolis");
         _kSeedThermoProfile = fluidCompute.FindKernel("SeedThermoProfile");
         _kApplyConvergence = fluidCompute.FindKernel("ApplyConvergence");
+        _kRelaxHumidityToProfile = fluidCompute.FindKernel("RelaxHumidityToProfile");
+        _kApplyThermalBuoyancy = fluidCompute.FindKernel("ApplyThermalBuoyancy");
 
         _defaultQuadSize = quadSize;
         _defaultSimWidth = simWidth;
@@ -455,6 +478,10 @@ public class Weather2D : MonoBehaviour
         _defaultLapseRate = lapseRate;
         _defaultSurfaceHumidity = surfaceHumidity;
         _defaultHumidityDecay = humidityDecay;
+        _defaultEnableSurfaceHumidityRelax = enableSurfaceHumidityRelax;
+        _defaultSurfaceHumidityRelaxStrength = surfaceHumidityRelaxStrength;
+        _defaultSurfaceHumidityRelaxHeight = surfaceHumidityRelaxHeight;
+        _defaultThermalBuoyancyStrength = thermalBuoyancyStrength;
         _defaultEnableConvergence = enableConvergence;
         _defaultConvergenceStrength = convergenceStrength;
         _defaultConvergenceWidth = convergenceWidth;
@@ -933,12 +960,14 @@ public class Weather2D : MonoBehaviour
         ApplyConvergence();
         AdvectVelocity();
         AdvectHumidity();
+        RelaxHumidityToProfile();
         AdvectCloud();
         AdvectTemperature();
         AdvectTurbulence();
         AdvectSynopticPressure();
         ProjectVelocity();
         ApplyUpperDamping();
+        ApplyThermalBuoyancy();
         RunMicrophysics(dt);
         GatherStatsAndUpdatePrecipitation(dt);
         _stepsCompleted++;
@@ -1192,6 +1221,36 @@ public class Weather2D : MonoBehaviour
         fluidCompute.SetFloat("_ConvergenceUpdraft", convergenceUpdraft);
         fluidCompute.SetTexture(_kApplyConvergence, "_ConvergenceVelocity", _velocityA);
         Dispatch(_kApplyConvergence);
+    }
+
+    private void RelaxHumidityToProfile()
+    {
+        if (!enableSurfaceHumidityRelax || surfaceHumidityRelaxStrength <= 0.0001f || surfaceHumidityRelaxHeight <= 0.0001f)
+        {
+            return;
+        }
+
+        fluidCompute.SetFloat("_SurfaceHumidity", Mathf.Max(0f, surfaceHumidity));
+        fluidCompute.SetFloat("_HumidityDecay", Mathf.Max(0f, humidityDecay));
+        fluidCompute.SetFloat("_SurfaceHumidityRelaxStrength", Mathf.Max(0f, surfaceHumidityRelaxStrength));
+        fluidCompute.SetFloat("_SurfaceHumidityRelaxHeight", Mathf.Max(0.0001f, surfaceHumidityRelaxHeight));
+        fluidCompute.SetTexture(_kRelaxHumidityToProfile, "_RelaxHumidity", _humidityA);
+        Dispatch(_kRelaxHumidityToProfile);
+    }
+
+    private void ApplyThermalBuoyancy()
+    {
+        if (Mathf.Abs(thermalBuoyancyStrength) <= 0.0001f)
+        {
+            return;
+        }
+
+        fluidCompute.SetFloat("_BaseTemperature", baseTemperature);
+        fluidCompute.SetFloat("_LapseRate", lapseRate);
+        fluidCompute.SetFloat("_ThermalBuoyancyStrength", thermalBuoyancyStrength);
+        fluidCompute.SetTexture(_kApplyThermalBuoyancy, "_ThermalBuoyancyVelocity", _velocityA);
+        fluidCompute.SetTexture(_kApplyThermalBuoyancy, "_ThermalBuoyancyTemperature", _temperatureA);
+        Dispatch(_kApplyThermalBuoyancy);
     }
 
     private void SeedThermoProfile(float baseTemp, float lapse, float surfaceHumid, float decay)
@@ -1673,16 +1732,20 @@ public class Weather2D : MonoBehaviour
                 lapseRate = 1.25f,
                 surfaceHumidity = 0.04f,
                 humidityDecay = 1.75f,
+                enableSurfaceHumidityRelax = true,
+                surfaceHumidityRelaxStrength = 10.0f,
+                surfaceHumidityRelaxHeight = 0.16f,
+                thermalBuoyancyStrength = 6.0f,
                 initialBursts = new[]
                 {
                     new Burst
                     {
                         position = new Vector2(0.5f, 0.18f),
                         radius = 0.17f,
-                        density = 28f,
-                        velocity = new Vector2(0f, 3.8f),
-                        heat = 9.0f,
-                        turbulence = 3.6f
+                        density = 0f,
+                        velocity = Vector2.zero,
+                        heat = 10.0f,
+                        turbulence = 2.2f
                     }
                 },
                 loopBursts = new[]
@@ -1691,10 +1754,10 @@ public class Weather2D : MonoBehaviour
                     {
                         position = new Vector2(0.5f, 0.08f),
                         radius = 0.11f,
-                        density = 2.8f,
-                        velocity = new Vector2(0f, 2.1f),
-                        heat = 2.6f,
-                        turbulence = 1.1f
+                        density = 0f,
+                        velocity = Vector2.zero,
+                        heat = 3.2f,
+                        turbulence = 0.9f
                     }
                 },
                 loopInterval = 0.2f
@@ -1979,6 +2042,27 @@ public class Weather2D : MonoBehaviour
             fastForwardDuration = _defaultFastForwardDuration;
         }
 
+        if (scenario.enableSurfaceHumidityRelax)
+        {
+            enableSurfaceHumidityRelax = true;
+            surfaceHumidityRelaxStrength = scenario.surfaceHumidityRelaxStrength > 0f
+                ? scenario.surfaceHumidityRelaxStrength
+                : _defaultSurfaceHumidityRelaxStrength;
+            surfaceHumidityRelaxHeight = scenario.surfaceHumidityRelaxHeight > 0f
+                ? scenario.surfaceHumidityRelaxHeight
+                : _defaultSurfaceHumidityRelaxHeight;
+        }
+        else
+        {
+            enableSurfaceHumidityRelax = _defaultEnableSurfaceHumidityRelax;
+            surfaceHumidityRelaxStrength = _defaultSurfaceHumidityRelaxStrength;
+            surfaceHumidityRelaxHeight = _defaultSurfaceHumidityRelaxHeight;
+        }
+
+        thermalBuoyancyStrength = scenario.thermalBuoyancyStrength != 0f
+            ? scenario.thermalBuoyancyStrength
+            : _defaultThermalBuoyancyStrength;
+
         _fastForwardTimer = fastForwardDuration;
         ApplyPrecipitationFeedbackOverride(scenario);
 
@@ -1994,6 +2078,10 @@ public class Weather2D : MonoBehaviour
             float lapse = scenario.lapseRate != 0f ? scenario.lapseRate : _defaultLapseRate;
             float humid = scenario.surfaceHumidity != 0f ? scenario.surfaceHumidity : _defaultSurfaceHumidity;
             float decay = scenario.humidityDecay != 0f ? scenario.humidityDecay : _defaultHumidityDecay;
+            baseTemperature = baseTemp;
+            lapseRate = lapse;
+            surfaceHumidity = humid;
+            humidityDecay = decay;
             SeedThermoProfile(baseTemp, lapse, humid, decay);
         }
 
