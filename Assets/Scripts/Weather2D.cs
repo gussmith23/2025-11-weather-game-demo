@@ -1670,7 +1670,7 @@ public class Weather2D : MonoBehaviour
                 fastForwardDuration = 1.0f,
                 useThermoProfile = true,
                 baseTemperature = 0.55f,
-                lapseRate = 0.95f,
+                lapseRate = 1.25f,
                 surfaceHumidity = 0.04f,
                 humidityDecay = 1.75f,
                 initialBursts = new[]
@@ -1679,9 +1679,9 @@ public class Weather2D : MonoBehaviour
                     {
                         position = new Vector2(0.5f, 0.18f),
                         radius = 0.17f,
-                        density = 50f,
+                        density = 28f,
                         velocity = new Vector2(0f, 3.8f),
-                        heat = 6.5f,
+                        heat = 9.0f,
                         turbulence = 3.6f
                     }
                 },
@@ -1691,9 +1691,9 @@ public class Weather2D : MonoBehaviour
                     {
                         position = new Vector2(0.5f, 0.08f),
                         radius = 0.11f,
-                        density = 7.0f,
-                        velocity = new Vector2(0f, 1.9f),
-                        heat = 1.6f,
+                        density = 2.8f,
+                        velocity = new Vector2(0f, 2.1f),
+                        heat = 2.6f,
                         turbulence = 1.1f
                     }
                 },
