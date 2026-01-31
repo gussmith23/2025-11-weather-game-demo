@@ -332,6 +332,9 @@ void MoistureMicrophysics(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (coord.x >= _SimSize.x || coord.y >= _SimSize.y)
         return;
 
+    float2 uv = (float2(coord) + 0.5) * _InvSimSize;
+    float envTemp = _BaseTemperature - _LapseRate * uv.y;
+
     float humidity = max(0.0, _MicroHumidity[coord]);
     float cloud = max(0.0, _MicroCloud[coord]);
     float2 velocity = _MicroVelocity[coord];
@@ -362,7 +365,8 @@ void MoistureMicrophysics(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     float tempDecay = saturate(1.0 - _TemperatureDecay * _DeltaTime);
     float turbDecay = saturate(1.0 - _TurbulenceDecay * _DeltaTime);
-    temperature *= tempDecay;
+    // Relax anomalies toward the sounding instead of decaying the absolute temperature to 0.
+    temperature = envTemp + (temperature - envTemp) * tempDecay;
     turbulence *= turbDecay;
 
     _MicroHumidity[coord] = max(0.0, humidity);
