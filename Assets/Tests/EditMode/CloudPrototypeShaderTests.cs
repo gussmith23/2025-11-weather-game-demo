@@ -26,6 +26,9 @@ public class CloudPrototypeShaderTests
   private static readonly int CaptureMaxFrames = Mathf.Max(1, GetEnvInt("CLOUD_CAPTURE_MAX", 60));
   private static readonly int Width = Mathf.Max(64, GetEnvInt("CLOUD_CAPTURE_WIDTH", 1024));
   private static readonly int Height = Mathf.Max(64, GetEnvInt("CLOUD_CAPTURE_HEIGHT", 512));
+  private static readonly float SpawnDelay = Mathf.Max(0f, GetEnvFloat("CLOUD_SPAWN_DELAY", 0.05f));
+  private static readonly float FormationSeconds = Mathf.Max(0.25f, GetEnvFloat("CLOUD_FORMATION_SECONDS", 4.0f));
+  private static readonly float CloudBaseHeight = Mathf.Clamp01(GetEnvFloat("CLOUD_CLOUD_BASE_HEIGHT", 0.18f));
 
   [Test]
   public void CloudPrototypeShader_RendersAndOptionallyCaptures()
@@ -36,6 +39,9 @@ public class CloudPrototypeShaderTests
     Shader shader = Shader.Find("Hidden/CloudPrototype");
     Assert.IsNotNull(shader, "CloudPrototype shader not found (Shader.Find failed).");
     var mat = new Material(shader);
+    mat.SetFloat("_SpawnDelay", SpawnDelay);
+    mat.SetFloat("_FormationSeconds", FormationSeconds);
+    mat.SetFloat("_CloudBaseHeight", CloudBaseHeight);
 
     IReadOnlyList<CaptureLayer> layers = ParseCaptureLayers(GetEnvString("CLOUD_CAPTURE_LAYERS", "final"));
 
@@ -89,6 +95,24 @@ public class CloudPrototypeShaderTests
     RenderLayer(mat, rt, t, 0);
     float variance = EstimateVariance(rt);
     Assert.Greater(variance, 1e-4f, $"Expected non-trivial render; variance too low: {variance}");
+
+    // Sanity checks for formation staging and avoiding stray density near the bottom of the domain.
+    RenderLayer(mat, rt, 0.0f, 1);
+    float meanAtZero = EstimateMean(rt, 0, rt.height);
+    Assert.Less(meanAtZero, 1e-4f, $"Expected near-empty density at t=0; mean={meanAtZero}");
+
+    float formationEnd = SpawnDelay + FormationSeconds;
+    RenderLayer(mat, rt, formationEnd, 1);
+    float meanAtFormed = EstimateMean(rt, 0, rt.height);
+    Assert.Greater(meanAtFormed, 2e-3f, $"Expected visible density at formation end (t={formationEnd:0.00}); mean={meanAtFormed}");
+
+    if (CloudBaseHeight > 0.05f)
+    {
+      float bandFrac = Mathf.Min(0.15f, CloudBaseHeight * 0.8f);
+      int bottomRows = Mathf.Max(1, Mathf.RoundToInt(rt.height * bandFrac));
+      float bottomMean = EstimateMean(rt, 0, bottomRows);
+      Assert.Less(bottomMean, 1e-4f, $"Expected near-zero density below cloud base; bottomMean={bottomMean}");
+    }
 
     float rainStrength = mat.GetFloat("_RainStrength");
     if (rainStrength > 0.001f)
@@ -208,6 +232,38 @@ public class CloudPrototypeShaderTests
     return (float)((sumSq / n) - (mean * mean));
   }
 
+  private static float EstimateMean(RenderTexture rt, int yMin, int yMax)
+  {
+    var req = AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32);
+    req.WaitForCompletion();
+    if (req.hasError)
+      return 0f;
+
+    yMin = Mathf.Clamp(yMin, 0, rt.height);
+    yMax = Mathf.Clamp(yMax, yMin, rt.height);
+    int width = rt.width;
+    int start = yMin * width;
+    int end = yMax * width;
+    int count = Mathf.Max(0, end - start);
+    if (count == 0)
+      return 0f;
+
+    var data = req.GetData<Color32>();
+    int step = Mathf.Max(1, count / 4096);
+    double sum = 0.0;
+    int n = 0;
+    for (int i = start; i < end; i += step)
+    {
+      Color32 c = data[i];
+      double v = (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255.0;
+      sum += v;
+      n++;
+    }
+    if (n <= 0)
+      return 0f;
+    return (float)(sum / n);
+  }
+
   private static string CreateUniqueRunDir(string baseDir, string prefix)
   {
     Directory.CreateDirectory(baseDir);
@@ -239,5 +295,11 @@ public class CloudPrototypeShaderTests
   {
     string value = Environment.GetEnvironmentVariable(name);
     return int.TryParse(value, out int parsed) ? parsed : defaultValue;
+  }
+
+  private static float GetEnvFloat(string name, float defaultValue)
+  {
+    string value = Environment.GetEnvironmentVariable(name);
+    return float.TryParse(value, out float parsed) ? parsed : defaultValue;
   }
 }

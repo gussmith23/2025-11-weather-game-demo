@@ -184,3 +184,11 @@
   - Added `TEST_FILTER ?= $(UNITY_TEST_FILTER)` compatibility so env-based filtering still works.
   - Added `run-tests` target as an alias of `test-editmode`.
 - Simplified `run-tests.sh` to a thin wrapper that just runs `make run-tests` from repo root.
+## 2026-02-13 – Cloud prototype cohesive thunderhead + formation schedule
+- Reworked `Assets/Resources/Shaders/CloudPrototype.shader` to eliminate stray density outside the cloud: SDF shapes now convert to a closed 0..1 base mask via `smoothstep`, with noise applied only at the boundary (`edgeMask = base*(1-base)`) plus a small interior billow.
+- Replaced the old stem/anvil feel with a single convective body made from a staged stack of overlapping bubbles, plus a late-forming anvil that widens over time and drifts via mild shear.
+- Added explicit formation staging (`_SpawnDelay`, `_FormationSeconds`, `_AnvilStart`) so t=0 is clean and the cloud grows upward before the anvil spreads.
+- Added slow edge-only dissolve after maturity (`_Dissolve*`), keeping the interior stable while edges evolve subtly.
+- Disabled rain by default (`_RainStrength = 0`) to avoid vertical-jet artifacts while shape/cohesion are tuned.
+- Updated `Assets/Scripts/CloudPrototypeController.cs` with an auto fast-forward schedule (fast until formation end, then normal) and exposed the new shader parameters.
+- Tightened `Assets/Tests/EditMode/CloudPrototypeShaderTests.cs` with density-debug assertions: near-empty at t=0, visible by formation end, and near-zero below cloud base.
