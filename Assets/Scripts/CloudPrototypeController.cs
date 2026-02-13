@@ -42,9 +42,11 @@ public class CloudPrototypeController : MonoBehaviour
   [Range(0.25f, 20f)] public float formationSeconds = 4.0f;
   [Range(0.05f, 1f)] public float bodyWidth = 0.32f;
   [Range(0f, 1f)] public float bodyTopHeight = 0.78f;
+  [Range(0.005f, 0.2f)] public float bodyBlendSoftness = 0.055f;
   [Range(0f, 1f)] public float anvilHeight = 0.80f;
   [Range(0f, 2f)] public float anvilWidth = 0.88f;
-  [Range(0f, 1f)] public float anvilStart = 0.65f;
+  [Range(0f, 1f)] public float anvilStart = 0.72f;
+  [Range(0.005f, 0.2f)] public float anvilBlendSoftness = 0.11f;
 
   [Header("Shear")]
   public Vector2 shearDir = new Vector2(1f, 0f);
@@ -53,11 +55,17 @@ public class CloudPrototypeController : MonoBehaviour
 
   [Header("Noise")]
   [Range(0.01f, 0.25f)] public float edgeSoftness = 0.08f;
-  [Range(0f, 1f)] public float edgeNoiseAmp = 0.25f;
+  [Range(0f, 1f)] public float edgeNoiseAmp = 0.17f;
   [Range(0.5f, 12f)] public float edgeNoiseScale = 5f;
   [Range(0f, 1f)] public float interiorNoiseAmp = 0.06f;
   [Range(0.5f, 8f)] public float interiorNoiseScale = 2.5f;
   [Range(0f, 2f)] public float noiseSpeed = 0.2f;
+  [Range(0.5f, 8f)] public float bodyWarpScale = 1.8f;
+  [Range(0f, 0.2f)] public float bodyWarpStrength = 0.06f;
+  [Range(0.5f, 8f)] public float billowScale = 1.75f;
+  [Range(0f, 1f)] public float billowSpeed = 0.13f;
+  [Range(0f, 0.2f)] public float billowStrength = 0.075f;
+  [Range(0.005f, 0.08f)] public float baseFeather = 0.02f;
 
   [Header("Dissolve")]
   [Range(0f, 0.5f)] public float dissolveStrength = 0.06f;
@@ -165,10 +173,12 @@ public class CloudPrototypeController : MonoBehaviour
     _material.SetFloat("_FormationSeconds", formationSeconds);
     _material.SetFloat("_BodyWidth", bodyWidth);
     _material.SetFloat("_BodyTopHeight", bodyTopHeight);
+    _material.SetFloat("_BodyBlendSoftness", bodyBlendSoftness);
 
     _material.SetFloat("_AnvilHeight", anvilHeight);
     _material.SetFloat("_AnvilWidth", anvilWidth);
     _material.SetFloat("_AnvilStart", anvilStart);
+    _material.SetFloat("_AnvilBlendSoftness", anvilBlendSoftness);
 
     _material.SetVector("_ShearDir", new Vector4(shearDir.x, shearDir.y, 0f, 0f));
     _material.SetFloat("_ShearStrength", shearStrength);
@@ -180,6 +190,12 @@ public class CloudPrototypeController : MonoBehaviour
     _material.SetFloat("_InteriorNoiseAmp", interiorNoiseAmp);
     _material.SetFloat("_InteriorNoiseScale", interiorNoiseScale);
     _material.SetFloat("_NoiseSpeed", noiseSpeed);
+    _material.SetFloat("_BodyWarpScale", bodyWarpScale);
+    _material.SetFloat("_BodyWarpStrength", bodyWarpStrength);
+    _material.SetFloat("_BillowScale", billowScale);
+    _material.SetFloat("_BillowSpeed", billowSpeed);
+    _material.SetFloat("_BillowStrength", billowStrength);
+    _material.SetFloat("_BaseFeather", baseFeather);
 
     _material.SetFloat("_DissolveStrength", dissolveStrength);
     _material.SetFloat("_DissolveScale", dissolveScale);

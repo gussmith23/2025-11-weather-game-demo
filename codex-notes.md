@@ -192,3 +192,11 @@
 - Disabled rain by default (`_RainStrength = 0`) to avoid vertical-jet artifacts while shape/cohesion are tuned.
 - Updated `Assets/Scripts/CloudPrototypeController.cs` with an auto fast-forward schedule (fast until formation end, then normal) and exposed the new shader parameters.
 - Tightened `Assets/Tests/EditMode/CloudPrototypeShaderTests.cs` with density-debug assertions: near-empty at t=0, visible by formation end, and near-zero below cloud base.
+## 2026-02-13 – Cloud prototype smooth-growth/billow upgrade pass
+- Replaced hard union shape construction with smooth unions in `CloudPrototype.shader` so the convective body reads as one cohesive object instead of stacked circles.
+- Switched from per-bubble threshold gating to a continuous growth envelope (`growthTop`) so formation ramps smoothly without discrete pop-in.
+- Added coherent time-based domain warping (`noiseTime`) for body contour advection and post-formation billow movement, instead of only UV scrolling.
+- Tuned anvil blending/activation and softened anvil onset to reduce sudden horizontal bar appearance.
+- Adjusted edge/interior noise and billow defaults to keep interior stable while allowing slow edge evolution.
+- Removed problematic `[unroll]` hint in self-shadow loop to fix Metal compile failure during EditMode test runs.
+- Validation: `make test-cloud-proto` passes; new capture runs at `Logs/cloud-prototype-captures/proto_upgrade_20260213_014259` and `Logs/cloud-prototype-captures/proto_upgrade2_20260213_014531`.
