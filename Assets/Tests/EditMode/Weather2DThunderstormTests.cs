@@ -7,7 +7,7 @@ using UnityEngine.Rendering;
 
 public class Weather2DThunderstormTests
 {
-    private const bool Verbose = true;
+    private static readonly bool Verbose = GetEnvFlag("THUNDERSTORM_VERBOSE");
     private static readonly bool CaptureEnabled = GetEnvFlag("THUNDERSTORM_CAPTURE");
     private static readonly string CaptureDir = GetEnvString("THUNDERSTORM_CAPTURE_DIR", "Logs/thunderstorm-captures");
     private static readonly string CaptureRunPrefix = GetEnvString("THUNDERSTORM_CAPTURE_RUN_PREFIX", "run");

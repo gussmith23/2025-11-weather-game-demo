@@ -1,3 +1,4 @@
+using System;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -5,7 +6,7 @@ public class WeatherFluidTests
 {
     private const int SimWidth = 160;
     private const int SimHeight = 96;
-    private const bool DumpStepStats = false;
+    private static readonly bool DumpStepStats = GetEnvFlag("WEATHER_FLUID_DUMP_STATS");
     private ComputeShader shader;
     private RenderTexture velocityA;
     private RenderTexture velocityB;
@@ -495,7 +496,7 @@ public class WeatherFluidTests
         if (rt == null)
             return;
         rt.Release();
-        Object.DestroyImmediate(rt);
+        UnityEngine.Object.DestroyImmediate(rt);
         rt = null;
     }
 
@@ -504,5 +505,11 @@ public class WeatherFluidTests
         var temp = a;
         a = b;
         b = temp;
+    }
+
+    private static bool GetEnvFlag(string name)
+    {
+        string value = Environment.GetEnvironmentVariable(name);
+        return !string.IsNullOrEmpty(value) && (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase));
     }
 }

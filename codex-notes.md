@@ -144,3 +144,43 @@
 
 ## 2025-11-16 – Hide humidity in display + debug gizmo
 - Added a toggle to hide humidity from the main visualization, plus a humidity gizmo overlay (Scene view) that can be enabled for debugging without washing out the render.
+
+## 2026-02-13 – Cloud prototype storm-target pass
+- Reworked `CloudPrototype.shader` toward the single-cell target: added explicit cloud base cutoff, softened edge-based density composition, tower root/billow shaping, mild height-based shear controls, anvil thickness/edge feathering, optional overshoot, and a procedural rain shaft tied to cloud source density.
+- Added debug-layer rendering support in shader via `_DebugMode` (`final`, `mask_density`, `mask_rain`) so captures can inspect density and rain masks independently from final composite.
+- Expanded `CloudPrototypeController` inspector bindings to expose and continuously push all major prototype parameters (shape, density, shear, rain, shading, and debug mode) for repeatable play-mode tuning.
+- Extended `CloudPrototypeShaderTests` to parse `CLOUD_CAPTURE_LAYERS`, emit captures into per-layer subdirectories under a unique run directory, and assert rain-mask variance at ~1.5s when rain is enabled.
+## 2026-02-13 – Cloud prototype rollback + incremental restart
+- Rolled back `CloudPrototype.shader` to a closer-to-baseline visual formulation after the previous storm-target pass degraded appearance.
+- Kept the new harness capabilities (`_DebugMode`, layered capture output, layer parsing in tests), but relaxed rain-mask assertion to only run when `_RainStrength > 0` so rain-off captures are valid.
+- Restarted tuning from step 1 only: explicit cloud base enabled (`_CloudBaseHeight=0.18`) while leaving shear and rain defaults off.
+- Generated comparison runs:
+  - `Logs/cloud-prototype-captures/proto_revert_20260213_003545`
+  - `Logs/cloud-prototype-captures/proto_step1_base_20260213_003615`
+## 2026-02-13 – Remove cloud column + continue incremental tuning
+- Removed the vertical cloud stem from `CloudPrototype.shader` so density no longer forms a column beneath the main cloud body; cloud composition is now driven by the anvil/head only.
+- Added a flat-bottom density gate (`flatBottom`) above `_CloudBaseHeight` to preserve a relatively level cloud underside.
+- Continued the staged rollout:
+  - Step 2: enabled mild default shear (`_ShearStrength=0.12`) for slight downwind drift.
+  - Step 3: enabled a restrained default rain shaft (`_RainStrength=0.28`, `_RainStartHeight=0.62`, `_RainWidth=0.06`) sourced from cloud density near anvil center.
+- Updated play defaults in `CloudPrototypeController` to match shear/rain defaults.
+- Validation/captures:
+  - `make test-cloud-proto` passing.
+  - `Logs/cloud-prototype-captures/proto_step2_shear_flatbase_20260213_004451`
+  - `Logs/cloud-prototype-captures/proto_step3_rain_flatbase_20260213_004606`
+## 2026-02-13 – Added play-mode shader preview scene
+- Added `Assets/Scripts/CloudPrototypeSceneBootstrap.cs`, a lightweight runtime bootstrap that creates a fullscreen quad and wires `CloudPrototypeController` automatically.
+- Added new scene `Assets/Scenes/CloudPrototypePreview.unity` with a `Cloud Prototype Bootstrap` object so the shader can be viewed immediately in play mode.
+- Added corresponding meta files for new script/scene assets.
+## 2026-02-13 – Warning cleanup + preview camera fix
+- Resolved CS0162 unreachable-code warnings in tests by replacing compile-time debug constants with environment-driven runtime flags:
+  - `WeatherFluidTests`: `DumpStepStats` now reads `WEATHER_FLUID_DUMP_STATS`.
+  - `Weather2DThunderstormTests`: `Verbose` now reads `THUNDERSTORM_VERBOSE`.
+- Adjusted `CloudPrototypeSceneBootstrap` URP camera setup to disable forced depth/color targets (`CameraOverrideOption.Off`) to avoid depth-target command buffer warnings in the shader preview scene.
+## 2026-02-13 – Move test-runner logic into Makefile
+- Migrated `run-tests.sh` behavior into `Makefile` so Unity test invocation flags live in one place.
+- `Makefile` updates:
+  - Added `ROOT`-based project path resolution (works regardless of invocation directory).
+  - Added `TEST_FILTER ?= $(UNITY_TEST_FILTER)` compatibility so env-based filtering still works.
+  - Added `run-tests` target as an alias of `test-editmode`.
+- Simplified `run-tests.sh` to a thin wrapper that just runs `make run-tests` from repo root.

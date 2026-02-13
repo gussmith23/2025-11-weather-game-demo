@@ -1719,23 +1719,23 @@ public class Weather2D : MonoBehaviour
                 convergenceWindSpeed = 1.45f,
                 convergenceUpdraft = 1.4f,
                 overrideMicrophysics = true,
-                saturationThreshold = 0.015f,
-                condensationRate = 1200f,
+                saturationThreshold = 0.014f,
+                condensationRate = 2200f,
                 evaporationRate = 0f,
-                precipitationRate = 0.0045f,
-                latentHeatBuoyancy = 7.8f,
+                precipitationRate = 0.2f,
+                latentHeatBuoyancy = 9.2f,
                 overrideFastForward = true,
                 fastForwardScale = 3f,
                 fastForwardDuration = 1.0f,
                 useThermoProfile = true,
                 baseTemperature = 0.55f,
                 lapseRate = 1.25f,
-                surfaceHumidity = 0.04f,
-                humidityDecay = 1.75f,
+                surfaceHumidity = 0.06f,
+                humidityDecay = 1.6f,
                 enableSurfaceHumidityRelax = true,
                 surfaceHumidityRelaxStrength = 10.0f,
-                surfaceHumidityRelaxHeight = 0.16f,
-                thermalBuoyancyStrength = 6.0f,
+                surfaceHumidityRelaxHeight = 0.11f,
+                thermalBuoyancyStrength = 9.0f,
                 initialBursts = new[]
                 {
                     new Burst
@@ -1744,8 +1744,8 @@ public class Weather2D : MonoBehaviour
                         radius = 0.17f,
                         density = 0f,
                         velocity = Vector2.zero,
-                        heat = 10.0f,
-                        turbulence = 2.2f
+                        heat = 6.0f,
+                        turbulence = 1.2f
                     }
                 },
                 loopBursts = new[]
@@ -1757,10 +1757,10 @@ public class Weather2D : MonoBehaviour
                         density = 0f,
                         velocity = Vector2.zero,
                         heat = 3.2f,
-                        turbulence = 0.9f
+                        turbulence = 0.5f
                     }
                 },
-                loopInterval = 0.2f
+                loopInterval = 0.22f
             },
             new DemoScenario
             {
