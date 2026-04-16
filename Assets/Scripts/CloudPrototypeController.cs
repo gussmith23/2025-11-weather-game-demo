@@ -17,13 +17,15 @@ public class CloudPrototypeController : MonoBehaviour
 
   public bool useAutoFastForward = true;
   public bool matchFastForwardToFormation = true;
-  public float fastForwardScale = 8f;
+  public float fastForwardScale = 2.5f;
   public float normalScale = 1f;
+  [Tooltip("Real-time seconds over which speed blends from fast to normal at formation end.")]
+  public float fastForwardBlendDuration = 2.0f;
   [Tooltip("Used only when matchFastForwardToFormation is false.")]
-  public float fastForwardUntilSeconds = 4f;
+  public float fastForwardUntilSeconds = 8f;
 
   public bool loop = false;
-  public float loopPeriodSeconds = 12f;
+  public float loopPeriodSeconds = 24f;
 
   [Header("Sky")]
   public Color skyTopColor = new Color(0.36f, 0.50f, 0.74f, 1f);
@@ -37,16 +39,16 @@ public class CloudPrototypeController : MonoBehaviour
   [Range(0f, 3f)] public float shadowStrength = 1.2f;
 
   [Header("Formation")]
-  [Range(0f, 1f)] public float cloudBaseHeight = 0.18f;
+  [Range(0f, 1f)] public float cloudBaseHeight = 0.06f;
   [Range(0f, 2f)] public float spawnDelay = 0.05f;
-  [Range(0.25f, 20f)] public float formationSeconds = 4.0f;
-  [Range(0.05f, 1f)] public float bodyWidth = 0.32f;
-  [Range(0f, 1f)] public float bodyTopHeight = 0.78f;
-  [Range(0.005f, 0.2f)] public float bodyBlendSoftness = 0.055f;
-  [Range(0f, 1f)] public float anvilHeight = 0.80f;
-  [Range(0f, 2f)] public float anvilWidth = 0.88f;
-  [Range(0f, 1f)] public float anvilStart = 0.72f;
-  [Range(0.005f, 0.2f)] public float anvilBlendSoftness = 0.11f;
+  [Range(0.25f, 20f)] public float formationSeconds = 8.0f;
+  [Range(0.05f, 1f)] public float bodyWidth = 0.20f;
+  [Range(0f, 1f)] public float bodyTopHeight = 0.90f;
+  [Range(0.005f, 0.2f)] public float bodyBlendSoftness = 0.12f;
+  [Range(0f, 1f)] public float anvilHeight = 0.92f;
+  [Range(0f, 2f)] public float anvilWidth = 0.52f;
+  [Range(0f, 1f)] public float anvilStart = 0.82f;
+  [Range(0.005f, 0.2f)] public float anvilBlendSoftness = 0.07f;
 
   [Header("Shear")]
   public Vector2 shearDir = new Vector2(1f, 0f);
@@ -55,7 +57,7 @@ public class CloudPrototypeController : MonoBehaviour
 
   [Header("Noise")]
   [Range(0.01f, 0.25f)] public float edgeSoftness = 0.08f;
-  [Range(0f, 1f)] public float edgeNoiseAmp = 0.17f;
+  [Range(0f, 1f)] public float edgeNoiseAmp = 0.09f;
   [Range(0.5f, 12f)] public float edgeNoiseScale = 5f;
   [Range(0f, 1f)] public float interiorNoiseAmp = 0.06f;
   [Range(0.5f, 8f)] public float interiorNoiseScale = 2.5f;
@@ -64,7 +66,7 @@ public class CloudPrototypeController : MonoBehaviour
   [Range(0f, 0.2f)] public float bodyWarpStrength = 0.06f;
   [Range(0.5f, 8f)] public float billowScale = 1.75f;
   [Range(0f, 1f)] public float billowSpeed = 0.13f;
-  [Range(0f, 0.2f)] public float billowStrength = 0.075f;
+  [Range(0f, 0.2f)] public float billowStrength = 0.04f;
   [Range(0.005f, 0.08f)] public float baseFeather = 0.02f;
 
   [Header("Dissolve")]
@@ -86,6 +88,7 @@ public class CloudPrototypeController : MonoBehaviour
   [Range(0, 2)] public int debugMode = 0;
 
   private Material _material;
+  private float _realTimeSinceFormationEnd = -1f;
 
   private void OnEnable()
   {
@@ -139,10 +142,22 @@ public class CloudPrototypeController : MonoBehaviour
       float formationEnd = spawnDelay + formationSeconds;
       float fastUntil = matchFastForwardToFormation ? formationEnd : fastForwardUntilSeconds;
 
-      float scheduleScale = 1f;
+      float scheduleScale = normalScale;
       if (useAutoFastForward)
       {
-        scheduleScale = timeSeconds < fastUntil ? fastForwardScale : normalScale;
+        if (timeSeconds < fastUntil)
+        {
+          _realTimeSinceFormationEnd = -1f;
+          scheduleScale = fastForwardScale;
+        }
+        else
+        {
+          if (_realTimeSinceFormationEnd < 0f)
+            _realTimeSinceFormationEnd = 0f;
+          _realTimeSinceFormationEnd += Time.deltaTime;
+          float blend = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(_realTimeSinceFormationEnd / Mathf.Max(fastForwardBlendDuration, 0.01f)));
+          scheduleScale = Mathf.Lerp(fastForwardScale, normalScale, blend);
+        }
       }
 
       timeSeconds += Time.deltaTime * timeScale * scheduleScale;
@@ -150,6 +165,7 @@ public class CloudPrototypeController : MonoBehaviour
       if (loop && loopPeriodSeconds > 0f && timeSeconds > loopPeriodSeconds)
       {
         timeSeconds = 0f;
+        _realTimeSinceFormationEnd = -1f;
       }
     }
 

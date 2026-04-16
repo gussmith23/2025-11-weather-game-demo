@@ -8,26 +8,26 @@ Shader "Hidden/CloudPrototype"
     _ShadowColor ("Shadow Color", Color) = (0.55, 0.60, 0.68, 1)
     _RainColor ("Rain Color", Color) = (0.68, 0.72, 0.80, 1)
 
-    _CloudBaseHeight ("Cloud Base Height", Range(0, 1)) = 0.18
+    _CloudBaseHeight ("Cloud Base Height", Range(0, 1)) = 0.06
 
     _SpawnDelay ("Spawn Delay", Range(0, 2)) = 0.05
     _FormationSeconds ("Formation Seconds", Range(0.25, 20)) = 4.0
-    _BodyWidth ("Body Width", Range(0.05, 1)) = 0.32
-    _BodyTopHeight ("Body Top Height", Range(0, 1)) = 0.78
-    _BodyBlendSoftness ("Body Blend Softness", Range(0.005, 0.2)) = 0.055
+    _BodyWidth ("Body Width", Range(0.05, 1)) = 0.20
+    _BodyTopHeight ("Body Top Height", Range(0, 1)) = 0.90
+    _BodyBlendSoftness ("Body Blend Softness", Range(0.005, 0.2)) = 0.12
 
-    _AnvilHeight ("Anvil Height", Range(0, 1)) = 0.80
-    _AnvilWidth ("Anvil Width", Range(0, 2)) = 0.88
-    _AnvilStart ("Anvil Start", Range(0, 1)) = 0.72
-    _AnvilBlendSoftness ("Anvil Blend Softness", Range(0.005, 0.2)) = 0.11
+    _AnvilHeight ("Anvil Height", Range(0, 1)) = 0.92
+    _AnvilWidth ("Anvil Width", Range(0, 2)) = 0.52
+    _AnvilStart ("Anvil Start", Range(0, 1)) = 0.82
+    _AnvilBlendSoftness ("Anvil Blend Softness", Range(0.005, 0.2)) = 0.07
 
     _ShearDir ("Shear Dir", Vector) = (1, 0, 0, 0)
     _ShearStrength ("Shear Strength", Range(0, 1)) = 0.12
     _ShearStartHeight ("Shear Start Height", Range(0, 1)) = 0.45
 
     _EdgeSoftness ("Edge Softness", Range(0.01, 0.25)) = 0.08
-    _EdgeNoiseAmp ("Edge Noise Amp", Range(0, 1)) = 0.17
-    _EdgeNoiseScale ("Edge Noise Scale", Range(0.5, 12)) = 5
+    _EdgeNoiseAmp ("Edge Noise Amp", Range(0, 1)) = 0.09
+    _EdgeNoiseScale ("Edge Noise Scale", Range(0.5, 12)) = 4
     _InteriorNoiseAmp ("Interior Noise Amp", Range(0, 1)) = 0.04
     _InteriorNoiseScale ("Interior Noise Scale", Range(0.5, 8)) = 2.3
     _NoiseSpeed ("Noise Speed", Range(0, 2)) = 0.2
@@ -36,7 +36,7 @@ Shader "Hidden/CloudPrototype"
     _BodyWarpStrength ("Body Warp Strength", Range(0, 0.2)) = 0.06
     _BillowScale ("Billow Scale", Range(0.5, 8)) = 1.75
     _BillowSpeed ("Billow Speed", Range(0, 1)) = 0.13
-    _BillowStrength ("Billow Strength", Range(0, 0.2)) = 0.075
+    _BillowStrength ("Billow Strength", Range(0, 0.2)) = 0.04
 
     _BaseFeather ("Base Feather", Range(0.005, 0.08)) = 0.02
 
@@ -254,30 +254,27 @@ Shader "Hidden/CloudPrototype"
         float warpY = (noiseTime(p * _BodyWarpScale + float2(-7.7, 9.4), flowT + 0.37) - 0.5) * 2.0;
         float2 pWarped = p + float2(warpX, warpY) * _BodyWarpStrength * billowActivity;
 
-        // Continuous growth envelope avoids discrete pop-in from per-bubble thresholds.
+        // growthTop is the single rising boundary that reveals the whole cloud as one mass.
         float growthTop = lerp(_CloudBaseHeight + 0.08, _BodyTopHeight, smoothstep(0.16, 0.86, progressEase));
 
+        // All bubbles computed at full strength — no per-bubble activation gates.
         float body = -1.5;
         const int kBubbles = 5;
         for (int j = 0; j < kBubbles; j++)
         {
           float j01 = (j + 1.0) / kBubbles;
           float centerY = lerp(_CloudBaseHeight + 0.10, _BodyTopHeight, j01);
-          float activation = smoothstep(-0.16, 0.10, growthTop - centerY);
-
           float jitter = (noise2(float2(j * 19.7, 13.1)) - 0.5) * 0.05;
-          float radius = _BodyWidth * lerp(1.18, 0.78, j01) * lerp(0.84, 1.0, activation);
+          float radius = _BodyWidth * lerp(1.18, 0.78, j01);
           float2 bubbleP = float2(pWarped.x - jitter, (pWarped.y - centerY) * 1.85);
-          float bubble = -sdCircle(bubbleP, float2(0.0, 0.0), radius);
-          bubble = lerp(-1.5, bubble, activation);
-
-          body = smoothMaxField(body, bubble, _BodyBlendSoftness);
+          body = smoothMaxField(body, -sdCircle(bubbleP, float2(0.0, 0.0), radius), _BodyBlendSoftness);
         }
 
-        float topLobeOn = smoothstep(0.58, 0.90, progressEase);
+        // Top lobe always present — revealed by growthTop clip like everything else.
         float topLobe = -sdCircle(float2(pWarped.x * 1.04, (pWarped.y - (_BodyTopHeight + 0.025)) * 2.0), float2(0.0, 0.0), _BodyWidth * 0.74);
-        body = smoothMaxField(body, lerp(-1.5, topLobe, topLobeOn), _BodyBlendSoftness);
+        body = smoothMaxField(body, topLobe, _BodyBlendSoftness);
 
+        // Anvil always present at body width, spreading to full anvil width as storm matures.
         float anvilT = smoothstep(_AnvilStart, 1.0, progressEase);
         float2 uvAnvil = uv + shearOffset(uv) * anvilT;
         float2 pAnvil = float2((uvAnvil.x - 0.5) * 2.0, uvAnvil.y);
@@ -286,11 +283,12 @@ Shader "Hidden/CloudPrototype"
         float anvilCap = -sdCapsule(pAnvil, float2(-anvilWidth * 0.64, _AnvilHeight - 0.005), float2(anvilWidth * 0.64, _AnvilHeight - 0.005), 0.085);
         float anvilDome = -sdCircle(float2(pAnvil.x, (pAnvil.y - (_AnvilHeight + 0.045)) * 1.28), float2(0.0, 0.0), 0.12);
         float anvilShape = smoothMaxField(anvilCap, anvilDome, _AnvilBlendSoftness);
-        float anvil = lerp(-1.5, anvilShape, anvilT);
 
-        float core = smoothMaxField(body, anvil, 0.06);
+        float core = smoothMaxField(body, anvilShape, 0.15);
 
-        float baseD = smoothstep(0.0, max(_EdgeSoftness, 1e-4), core);
+        // Single soft clip at the growing top — the whole mass rises together.
+        float topClip = smoothstep(0.0, _EdgeSoftness * 3.0, growthTop - uv.y);
+        float baseD = smoothstep(0.0, max(_EdgeSoftness, 1e-4), core) * topClip;
 
         // Keep a flat-ish base with gentle edge lift so the underside does not read as a hard disc.
         float xNorm = abs(p.x) / max(_BodyWidth * 1.8, 1e-3);
